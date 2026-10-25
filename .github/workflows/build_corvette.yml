@@ -429,10 +429,10 @@ jobs:
             echo 'void ksu_handle_vfs_fstat(void) {}' >> ./drivers/kernelsu/core/init.c
             echo 'void ksu_handle_stat(void) {}' >> ./drivers/kernelsu/core/init.c
           }
-          # bridge.c 的 setresuid 声明链修复(原生 setuid_hook.h 有原型, bridge 缺 include)
-          grep -q 'ksu_handle_setresuid' ./drivers/kernelsu/hook/syscall_event_bridge.c && {
+          # bridge.c 的 setresuid 声明修复(10_enable 删了头文件声明, 直接插 extern)
+          grep -q 'int ksu_handle_setresuid' ./drivers/kernelsu/hook/syscall_event_bridge.c || {
             L=$(grep -n '^#include' ./drivers/kernelsu/hook/syscall_event_bridge.c | tail -1 | cut -d: -f1)
-            [ -n "$L" ] && sed -i "${L}a #include \"setuid_hook.h\"" ./drivers/kernelsu/hook/syscall_event_bridge.c && echo "bridge.c 补 include setuid_hook.h"
+            [ -n "$L" ] && sed -i "${L}a extern int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid);" ./drivers/kernelsu/hook/syscall_event_bridge.c && echo "bridge.c 已插入 setresuid extern 声明"
           } || true
           # 3) 移除上一版与原生定义重复的 stub 行
           sed -i '/syscall_fn_t \*ksu_syscall_table = NULL;/d; /void ksu_syscall_table_hook/d; /void ksu_syscall_table_unhook/d; /void ksu_clear_task_tracepoint_flag_if_needed/d' ./drivers/kernelsu/core/init.c 2>/dev/null || true
