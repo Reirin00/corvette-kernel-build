@@ -577,8 +577,22 @@ jobs:
         run: |
           cd kernel_workspace
           CUSTOM_SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+          # KSU 完整版本串: 最近tag-g<hash> (如 v4.2.1-r2-g71f4877d), 拼入 uname
+          if [ -d KernelSU ]; then
+            KSU_TAG=$(cd KernelSU && git describe --tags --abbrev=0 2>/dev/null || echo ksusu)
+            KSU_HASH=$(cd KernelSU && git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
+            KSU_PART="${KSU_TAG}-g${KSU_HASH}"
+          elif [ -d KernelSU-Next ]; then
+            KSU_TAG=$(cd KernelSU-Next && git describe --tags --abbrev=0 2>/dev/null || echo ksunext)
+            KSU_HASH=$(cd KernelSU-Next && git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
+            KSU_PART="${KSU_TAG}-g${KSU_HASH}"
+          else
+            KSU_PART=""
+          fi
           FINAL_SUFFIX="${{ env.KERNEL_NAME }}"
+          [ -n "$KSU_PART" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${KSU_PART}"
           [ -n "$CUSTOM_SUFFIX" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${CUSTOM_SUFFIX}"
+          echo "KSU 版本段: $KSU_PART"
           echo "最终内核版本后缀：-${FINAL_SUFFIX}"
           echo "KSUFFIX=$FINAL_SUFFIX" >> $GITHUB_ENV
           echo "ksuffix=$FINAL_SUFFIX" >> $GITHUB_OUTPUT
