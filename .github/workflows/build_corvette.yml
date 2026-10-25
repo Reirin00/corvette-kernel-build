@@ -351,7 +351,7 @@ jobs:
             # 复活老式 SUSFS: 新版 KSU Kconfig 已删 KSU_SUSFS 符号组, 注入官方激活补丁
             cd ../KernelSU && \
               cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./ && \
-              awk '/^diff --git /{keep=($3!~/a\/kernel\/(core\/init\.c|hook\/setuid_hook\.c|manager\/pkg_observer\.c)$/)} keep' 10_enable_susfs_for_ksu.patch > 10_filtered.patch && \
+              awk '/^diff --git /{keep=($3!~/a\/kernel\/(core\/init\.c|hook\/setuid_hook\.c|manager\/pkg_observer\.c|policy\/app_profile\.[ch])$/)} keep' 10_enable_susfs_for_ksu.patch > 10_filtered.patch && \
               { patch -p1 < 10_filtered.patch || echo "(10_enable 部分失败, 见上方)"; } && \
               cd ..
           else
