@@ -36,6 +36,12 @@ on:
           - 'v4.2.1-r2'
           - 'susfs_new'
           - 'main'
+      extra_tweaks:
+        description: '是否追加 KSM/ZSTD_COMPRESS/ZSTD_DECOMPRESS/KYBER(排查不开机可关, 已知可开机包无KSM/ZSTD_C)'
+        required: true
+        type: choice
+        default: 'true'
+        options: ['true','false']
       ksu_in_uname:
         description: 'uname 是否拼入 KSU 版本段(排查不开机时可关, 得到纯官方版本串)'
         required: true
@@ -59,6 +65,7 @@ on:
           - 'manual'
           - 'syscall'
           - 'kprobes'
+          - 'lsm'
       kpm_enable:
         description: '是否开启kpm(仅对sukisu生效; 可能轻微增加耗电，不需要可保持默认关闭)'
         required: true
@@ -326,7 +333,9 @@ jobs:
             if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
               cp ./SukiSU_patch/hooks/syscall_hooks.patch ./common/
             fi
-            cp ./SukiSU_patch/69_hide_stuff.patch ./common/
+            if [[ ${{ github.event.inputs.hook_method }} != "lsm" ]]; then
+              cp ./SukiSU_patch/69_hide_stuff.patch ./common/
+            fi
             cd ./common
             patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
@@ -335,7 +344,9 @@ jobs:
             if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
               patch -p1 < syscall_hooks.patch || true
             fi
-            patch -p1 < 69_hide_stuff.patch || true
+            if [[ ${{ github.event.inputs.hook_method }} != "lsm" ]]; then
+              patch -p1 < 69_hide_stuff.patch || true
+            fi
           else
             echo "正在添加KernelSU Next补丁..."
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
@@ -407,6 +418,11 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_MANUAL_HOOK=n" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_KPROBES_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          elif [ "${{ github.event.inputs.hook_method }}" == "lsm" ]; then
+            echo "正在开启LSM钩子(对齐已知可开机包: KSU_LSM_HOOKS+MANUAL_SU, 不打源码hook补丁)..."
+            echo "CONFIG_KSU_LSM_HOOKS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_MANUAL_SU=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> ./common/arch/arm64/configs/gki_defconfig
           else
             echo "正在开启manual/syscall钩子..."
             echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -444,6 +460,10 @@ jobs:
       - name: 添加 KSM/ZSTD/Kyber 配置项(corvette专用; UCLAMP_TASK/NET_SCH_FQ 源码defconfig已有,勿重复)
         run: |
           cd kernel_workspace
+          if [ "${{ github.event.inputs.extra_tweaks || 'true' }}" = "false" ]; then
+            echo "跳过 KSM/ZSTD/KYBER 追加(extra_tweaks=false, 对齐已知可开机config)"
+            exit 0
+          fi
           echo "CONFIG_KSM=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ZSTD_COMPRESS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ZSTD_DECOMPRESS=y" >> ./common/arch/arm64/configs/gki_defconfig
