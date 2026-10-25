@@ -351,7 +351,8 @@ jobs:
             # 复活老式 SUSFS: 新版 KSU Kconfig 已删 KSU_SUSFS 符号组, 注入官方激活补丁
             cd ../KernelSU && \
               cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./ && \
-              { patch -p1 < 10_enable_susfs_for_ksu.patch || echo "(10_enable_susfs 部分失败, 见上方 fuzz 输出)"; } && \
+              awk '/^diff --git /{keep=($3!~/a\/kernel\/(core\/init\.c|hook\/setuid_hook\.c|manager\/pkg_observer\.c)$/)} keep' 10_enable_susfs_for_ksu.patch > 10_filtered.patch && \
+              { patch -p1 < 10_filtered.patch || echo "(10_enable 部分失败, 见上方)"; } && \
               cd ..
           else
             echo "正在添加KernelSU Next补丁..."
@@ -382,9 +383,26 @@ jobs:
             patch -p2 -N -F 3 < fix_apk_sign.c.patch || true
           fi
           
-      - name: SUSFS include 兜底(50_add 的 include hunk 可能因上下文不匹配失败)
+      - name: SUSFS 符号/include 兜底(宏值源自社区完整版 susfs_def.h 与 KernelSU-Next)
         run: |
           cd kernel_workspace/common
+          echo '' >> ./include/linux/susfs_def.h
+          echo '/* === susfs 复活注入 === */' >> ./include/linux/susfs_def.h
+          echo '#ifndef DEFAULT_KSU_MNT_ID' >> ./include/linux/susfs_def.h
+          echo '#define DEFAULT_KSU_MNT_ID 2000000000ULL' >> ./include/linux/susfs_def.h
+          echo '#endif' >> ./include/linux/susfs_def.h
+          echo '#ifndef DEFAULT_KSU_MNT_GROUP_ID' >> ./include/linux/susfs_def.h
+          echo '#define DEFAULT_KSU_MNT_GROUP_ID 5000' >> ./include/linux/susfs_def.h
+          echo '#endif' >> ./include/linux/susfs_def.h
+          echo '#ifndef VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT' >> ./include/linux/susfs_def.h
+          echo '#define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT 0x80000000' >> ./include/linux/susfs_def.h
+          echo '#endif' >> ./include/linux/susfs_def.h
+          echo '#ifndef CL_COPY_MNT_NS' >> ./include/linux/susfs_def.h
+          echo '#define CL_COPY_MNT_NS BIT(25)' >> ./include/linux/susfs_def.h
+          echo '#endif' >> ./include/linux/susfs_def.h
+          echo 'extern bool susfs_is_current_ksu_domain(void);' >> ./include/linux/susfs_def.h
+          echo 'extern bool susfs_is_current_proc_umounted(void);' >> ./include/linux/susfs_def.h
+          echo 'extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;' >> ./include/linux/susfs_def.h
           for f in $(grep -rl 'SUSFS_IS_INODE' --include='*.c' . 2>/dev/null); do
             grep -q 'susfs_def.h' "$f" || {
               L=$(grep -n '^#include' "$f" | tail -1 | cut -d: -f1)
