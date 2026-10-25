@@ -132,25 +132,32 @@ jobs:
           [ -n "$SRC_REPO" ] || SRC_REPO="OnePlusOSS" &&
           SRC_BRANCH="${{ github.event.inputs.source_branch }}" &&
           [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_ace_3_pro" &&
-          DIR_NAME="android_kernel_common_oneplus_sm8650-oneplus-${SRC_BRANCH//\//-}" &&
           aria2c -s16 -x16 -k1M "https://github.com/${SRC_REPO}/android_kernel_common_oneplus_sm8650/archive/refs/heads/${SRC_BRANCH}.zip" -o common.zip &&
           unzip -q common.zip &&
-          [ -d "$DIR_NAME" ] || { echo "!! 源码下载失败或分支不存在: ${SRC_REPO} / ${SRC_BRANCH} (注意 cctv18 独有分支只能配 cctv18 仓库)"; exit 1; } &&
-          mv "$DIR_NAME" common &&
-          rm -rf common.zip &
+          SHADIR=$(ls -d android_kernel_common_oneplus_sm8650-* 2>/dev/null | head -1) &&
+          [ -n "$SHADIR" ] &&
+          mv "$SHADIR" common &&
+          rm -rf common.zip &&
+          echo "源码目录 $SHADIR -> common" &&
+          touch /tmp/ok_src &
           
           echo "正在克隆llvm-Clang20工具链..." &&
           mkdir -p clang20 &&
           aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/clang-r547379.zip -o clang.zip &&
           unzip -q clang.zip -d clang20 &&
-          rm -rf clang.zip &
+          rm -rf clang.zip &&
+          touch /tmp/ok_clang &
           
           echo "正在克隆构建工具..." &&
           aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/build-tools.zip -o build-tools.zip &&
           unzip -q build-tools.zip &&
-          rm -rf build-tools.zip &
-          
+          rm -rf build-tools.zip &&
+          touch /tmp/ok_bt &
+
           wait
+          for m in /tmp/ok_src /tmp/ok_clang /tmp/ok_bt; do
+            [ -f "$m" ] || { echo "!! 初始化未完成($m 缺失): 下载/解压/分支名有误, 见上方日志"; exit 1; }
+          done
           echo "所有源码及llvm-Clang20工具链初始化完成！"
           echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
           rm common/android/abi_gki_protected_exports_* || true
