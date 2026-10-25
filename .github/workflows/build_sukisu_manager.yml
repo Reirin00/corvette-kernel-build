@@ -8,9 +8,9 @@ on:
         required: false
         default: 'Reirin'
       source_ref:
-        description: 'SukiSU-Ultra 源码引用(susfs_new=最新susfs内核配套分支)'
+        description: 'SukiSU-Ultra 源码引用(main=最新发布线; susfs_new=7月susfs适配线,与内核集成配套)'
         required: false
-        default: 'susfs_new'
+        default: 'main'
 
 permissions:
   contents: write
