@@ -36,6 +36,12 @@ on:
           - 'v4.2.1-r2'
           - 'susfs_new'
           - 'main'
+      ksu_in_uname:
+        description: 'uname 是否拼入 KSU 版本段(排查不开机时可关, 得到纯官方版本串)'
+        required: true
+        type: choice
+        default: 'true'
+        options: ['true','false']
       ksu_type:
         description: 'KernelSU分支(SukiSU Ultra/KernelSU Next,默认SukiSU Ultra)'
         required: true
@@ -589,8 +595,10 @@ jobs:
           else
             KSU_PART=""
           fi
+          KSU_IN_UNAME="${{ github.event.inputs.ksu_in_uname }}"
+          [ -n "$KSU_IN_UNAME" ] || KSU_IN_UNAME="true"
           FINAL_SUFFIX="${{ env.KERNEL_NAME }}"
-          [ -n "$KSU_PART" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${KSU_PART}"
+          [ "$KSU_IN_UNAME" = "true" ] && [ -n "$KSU_PART" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${KSU_PART}"
           [ -n "$CUSTOM_SUFFIX" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${CUSTOM_SUFFIX}"
           echo "KSU 版本段: $KSU_PART"
           echo "最终内核版本后缀：-${FINAL_SUFFIX}"
