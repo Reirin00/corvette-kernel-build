@@ -1,0 +1,88 @@
+name: SukiSU Ultra 管理器 (Reirin 版)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: '版本名追加的署名(追加在官方版本号后, 如 v4.2.1-r2-Reirin)'
+        required: false
+        default: 'Reirin'
+      source_ref:
+        description: 'SukiSU-Ultra 源码引用(susfs_new=最新susfs内核配套分支)'
+        required: false
+        default: 'susfs_new'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 克隆 SukiSU-Ultra 源码(全历史+tags, git describe 需要tag)
+        uses: actions/checkout@v4
+        with:
+          repository: SukiSU-Ultra/SukiSU-Ultra
+          ref: ${{ github.event.inputs.source_ref || 'susfs_new' }}
+          fetch-depth: 0
+
+      - name: 版本名追加署名
+        run: |
+          TAG="${{ github.event.inputs.version_tag || 'Reirin' }}"
+          sed -i "s|extra\[\"managerVersionName\"\] = getVersionName()|extra[\"managerVersionName\"] = getVersionName() + \"-${TAG}\"|" manager/build.gradle.kts
+          echo "--- 修改结果 ---"
+          grep -n 'managerVersionName' manager/build.gradle.kts | head -3
+
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 生成签名密钥(自签, 用于安装; 与官方签名不同属正常)
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$HOME/reirin-release.jks" \
+            -storepass reirin2026 -keypass reirin2026 \
+            -alias reirin -keyalg RSA -keysize 4096 -validity 10950 \
+            -dname "CN=Reirin, OU=Reirin Kernel, O=Reirin, C=CN"
+
+      - name: 构建 release APK
+        run: |
+          cd manager
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon \
+            -PKEYSTORE_FILE="$HOME/reirin-release.jks" \
+            -PKEYSTORE_PASSWORD=reirin2026 \
+            -PKEY_ALIAS=reirin \
+            -PKEY_PASSWORD=reirin2026
+
+      - name: 整理产物
+        run: |
+          set -e
+          APK_PATH=$(find manager/app/build/outputs/apk/release -name '*.apk' | head -1)
+          [ -n "$APK_PATH" ] || { echo "!! 未找到产物 APK"; exit 1; }
+          ls -la "$APK_PATH"
+          TAG="${{ github.event.inputs.version_tag || 'Reirin' }}"
+          OUT="SukiSU-Ultra-latest-${TAG}-release.apk"
+          cp "$APK_PATH" "$OUT"
+          echo "APK_OUT=$OUT" >> $GITHUB_ENV
+          # 记录实际版本名(从产物映射读取)
+          $ANDROID_HOME/build-tools/*/aapt2 dump badging "$OUT" 2>/dev/null | grep -m1 "versionName" || true
+
+      - name: 上传 APK 工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU_Manager_Reirin
+          path: ${{ env.APK_OUT }}
+
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "Reirin-manager-${{ github.run_number }}"
+          name: "SukiSU Ultra 管理器 (Reirin 版) #${{ github.run_number }}"
+          body: |
+            SukiSU Ultra 管理器, 基于上游 ${{ github.event.inputs.source_ref || 'susfs_new' }} 分支最新源码编译
+            - 版本名追加署名: ${{ github.event.inputs.version_tag || 'Reirin' }}
+            - 自签名密钥(与官方签名不同, 升级官方版需先卸载)
+          files: ${{ env.APK_OUT }}
