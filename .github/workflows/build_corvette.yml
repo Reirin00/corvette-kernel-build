@@ -425,7 +425,6 @@ jobs:
             echo '/* ksu_syscall_table_stub_marker */' >> ./drivers/kernelsu/core/init.c
             echo '#include <linux/jump_label.h>' >> ./drivers/kernelsu/core/init.c
             echo 'DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);' >> ./drivers/kernelsu/core/init.c
-            echo 'void ksu_stop_ksud_execve_hook(void) {}' >> ./drivers/kernelsu/core/init.c
             echo 'void ksu_handle_vfs_fstat(void) {}' >> ./drivers/kernelsu/core/init.c
             echo 'void ksu_handle_stat(void) {}' >> ./drivers/kernelsu/core/init.c
           }
