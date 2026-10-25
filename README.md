@@ -7,15 +7,16 @@
 - 产物：AnyKernel3 直刷 zip（Release + Artifacts 双份）
 - 版本号 / ccache 键按所选源码分支的 Makefile 动态推导
 
-## 源码分支（source_branch 参数）
+## 源码选择（source_repo + source_branch 参数）
 
-| 分支 | 内核 | 对应系统 | 状态 |
+| 组合 | 内核 | 对应系统 | 说明 |
 |---|---|---|---|
-| **默认** `oneplus/sm8650_b_16.0.0_oneplus12_6.1.141` | 6.1.141 | **ColorOS 16** | ✅ 本机实测能开机（见下） |
-| `oneplus/sm8650_v_15.0.0_ace_3_pro` | 6.1.75 | ColorOS 15 | 分支已验证存在 |
-| `oneplus/sm8650_u_14.1.0_oneplus_ace3pro` | 6.1.75 | ColorOS 14.1 | 分支已验证存在 |
+| **默认** OnePlusOSS / `oneplus/sm8650_b_16.0.0_ace_3_pro` | 6.1.141 | **ColorOS 16** | corvette 专用 16 代官方源（2026-10-25 确认存在），与手机 6.1.141 精确匹配 |
+| cctv18 / `oneplus/sm8650_b_16.0.0_oneplus12_6.1.141` | 6.1.141 | ColorOS 16 | 社区修复镜像的 oneplus12 通用源——本机实测可开机的路线，**默认组合编不过时的兜底** |
+| OnePlusOSS / `oneplus/sm8650_v_15.0.0_ace_3_pro` | 6.1.75 | ColorOS 15 | corvette 官方 15 代源 |
+| OnePlusOSS / `oneplus/sm8650_u_14.1.0_oneplus_ace3pro` | 6.1.75 | ColorOS 14.1 | corvette 官方 14.1 源 |
 
-16 代没有 corvette 专用分支（截至 2026-10-25），默认分支是一加12源码的 SM8650 通用内核——cctv18 官方发布同源通用包，本机已实测（用户刷过 6.1.141 与 6.1.145 的通用包均正常开机）。
+注意：cctv18 独有分支（如 oneplus12_6.1.141）只能配 cctv18 仓库，选错组合会在下载源码一步明确报错退出。
 
 ## 内核版本后缀（关键）
 
@@ -56,6 +57,6 @@ fastboot 刷回备份的 boot.img（boot_a / boot_b 都刷）。
 
 ## 维护说明
 
-- workflow 从 `fastbuild_6.1.75.yml` 程序化生成（21 处确定性替换，v2），源 fork 在本地 `偏移量/work/corvette-qinjackson/`
+- workflow 从 `fastbuild_6.1.75.yml` 程序化生成（v2，21 处替换 + 手工修正），源 fork 在本地 `偏移量/work/corvette-qinjackson/`
 - 编译动作全部来自上游 cctv18 项目；本项目改了：源码分支参数化、ccache/版本号动态化、KSM/ZSTD/Kyber 步骤、参数默认值、Release 文案
-- 待办：网络恢复后核实 cctv18 是否有 6.1.145 分支，有则加入 source_branch 选项
+- 已核实：cctv18 无 6.1.145 分支（141 即最新）；OnePlusOSS 官方有 corvette 专用 16 代分支 b_16.0.0_ace_3_pro，已设为默认
