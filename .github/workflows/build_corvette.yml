@@ -428,8 +428,9 @@ jobs:
             echo 'void ksu_handle_vfs_fstat(void) {}' >> ./drivers/kernelsu/core/init.c
             # 50_add 内核侧调用点(老API名)的空实现: 新版KSU用自己的hook体系, 这些路径本就是死路径
             # C 链接按符号名解析, 无参定义与调用方声明不冲突
-            for fn in 'int ksu_handle_execveat(void) { return 0; }' 'void ksu_handle_sys_read(void) {}' 'int ksu_handle_faccessat(void) { return 0; }' 'int ksu_handle_stat(void) { return 0; }' 'int ksu_setup_preinit_file(void) { return 0; }' 'int ksu_preinit_handle_post_execveat(void) { return 0; }' 'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);':
+            for fn in 'int ksu_handle_execveat(void) { return 0; }' 'void ksu_handle_sys_read(void) {}' 'int ksu_handle_faccessat(void) { return 0; }' 'int ksu_handle_stat(void) { return 0; }' 'int ksu_setup_preinit_file(void) { return 0; }' 'int ksu_preinit_handle_post_execveat(void) { return 0; }' 'DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);'; do
               echo "$fn" >> ./drivers/kernelsu/core/init.c
+            done
             echo '#include <linux/static_key.h>' >> ./drivers/kernelsu/core/init.c
           }
           # bridge.c 的 setresuid 声明修复(10_enable 删了头文件声明, 直接插 extern)
