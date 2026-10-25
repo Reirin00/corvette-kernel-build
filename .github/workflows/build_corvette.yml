@@ -386,7 +386,10 @@ jobs:
         run: |
           cd kernel_workspace/common
           for f in $(grep -rl 'SUSFS_IS_INODE' --include='*.c' . 2>/dev/null); do
-            grep -q 'susfs_def.h' "$f" || { sed -i '0,/^#include/s//#include <linux\/susfs_def.h>\n#include/' "$f"; echo "补 include: $f"; }
+            grep -q 'susfs_def.h' "$f" || {
+              L=$(grep -n '^#include' "$f" | tail -1 | cut -d: -f1)
+              [ -n "$L" ] && sed -i "${L}a #include <linux/susfs_def.h>" "$f" && echo "补 include(置于末尾): $f"
+            }
           done
           echo "--- 兜底完成 ---"
 
