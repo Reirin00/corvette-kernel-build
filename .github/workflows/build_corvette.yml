@@ -382,6 +382,14 @@ jobs:
             patch -p2 -N -F 3 < fix_apk_sign.c.patch || true
           fi
           
+      - name: SUSFS include 兜底(50_add 的 include hunk 可能因上下文不匹配失败)
+        run: |
+          cd kernel_workspace/common
+          for f in $(grep -rl 'SUSFS_IS_INODE' --include='*.c' . 2>/dev/null); do
+            grep -q 'susfs_def.h' "$f" || { sed -i '0,/^#include/s//#include <linux\/susfs_def.h>\n#include/' "$f"; echo "补 include: $f"; }
+          done
+          echo "--- 兜底完成 ---"
+
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         run: |
           if [[ "${{ github.event.inputs.lz4_enable }}" == "1" || "${{ github.event.inputs.lz4_enable }}" == "3" ]]; then
