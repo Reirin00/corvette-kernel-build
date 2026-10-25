@@ -100,10 +100,10 @@ on:
         type: boolean
         default: 'false'
       kernel_suffix:
-        description: '内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)'
+        description: '自定义内核署名后缀(追加在官方后缀末尾: Reirin -> uname 显示 6.1.141-android14-11-o-gf421ce937631-Reirin; 留空=不加)'
         required: false
         type: string
-        default: ''
+        default: 'Reirin'
 
 jobs:
   build:
@@ -111,6 +111,7 @@ jobs:
     outputs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
       ksublevel: ${{ steps.ccacheconf.outputs.ksublevel }}
+      ksuffix: ${{ steps.makename.outputs.ksuffix }}
     steps:
       - name: 安装环境依赖+初始化源码仓库及llvm-Clang20工具链
         run: |
@@ -560,20 +561,18 @@ jobs:
           fi
 
       - name: 添加制作名称
+        id: makename
         run: |
           cd kernel_workspace
-          echo "替换内核版本后缀..."
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            echo "当前内核版本后缀：${{ github.event.inputs.kernel_suffix }}"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
-            done
-          else
-            echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ env.KERNEL_NAME }}\"|" "$f"
-            done
-          fi
+          CUSTOM_SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+          FINAL_SUFFIX="${{ env.KERNEL_NAME }}"
+          [ -n "$CUSTOM_SUFFIX" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${CUSTOM_SUFFIX}"
+          echo "最终内核版本后缀：-${FINAL_SUFFIX}"
+          echo "KSUFFIX=$FINAL_SUFFIX" >> $GITHUB_ENV
+          echo "ksuffix=$FINAL_SUFFIX" >> $GITHUB_OUTPUT
+          for f in ./common/scripts/setlocalversion; do
+            sed -i "\$s|echo \"\\\$res\"|echo \"-${FINAL_SUFFIX}\"|" "$f"
+          done
            
       - name: 构建内核
         run: |
@@ -689,11 +688,7 @@ jobs:
           if [[ "${{ github.event.inputs.lz4_enable }}" == "2" || "${{ github.event.inputs.lz4_enable }}" == "3" ]]; then
             wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8650/refs/heads/main/zram.zip
           fi
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_corvette_${{ github.event.inputs.kernel_suffix }}.zip ./*
-          else
-            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_corvette_${{ env.KERNEL_NAME }}.zip ./*
-          fi
+          zip -r "../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_corvette_${{ env.KSUFFIX }}.zip" ./*
 
       - name: 上传 Ccache 调试日志
         if: always() && inputs.ccache_debug
@@ -725,9 +720,7 @@ jobs:
 
       - name: 设置环境变量
         run: |
-          SUFFIX="${{ github.event.inputs.kernel_suffix }}"
-          [ -n "$SUFFIX" ] || SUFFIX="${{ env.KERNEL_NAME }}"
-          FULL_VERSION="6.1.${{ needs.build.outputs.ksublevel }}-${SUFFIX}"
+          FULL_VERSION="6.1.${{ needs.build.outputs.ksublevel }}-${{ needs.build.outputs.ksuffix }}"
           echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
           export FULL_VERSION=$FULL_VERSION
           TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
