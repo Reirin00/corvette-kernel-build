@@ -400,10 +400,11 @@ jobs:
           echo '#ifndef CL_COPY_MNT_NS' >> ./include/linux/susfs_def.h
           echo '#define CL_COPY_MNT_NS BIT(25)' >> ./include/linux/susfs_def.h
           echo '#endif' >> ./include/linux/susfs_def.h
+          echo '#include <linux/jump_label.h>' >> ./include/linux/susfs_def.h
           echo 'extern bool susfs_is_current_ksu_domain(void);' >> ./include/linux/susfs_def.h
           echo 'extern bool susfs_is_current_proc_umounted(void);' >> ./include/linux/susfs_def.h
           echo 'extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;' >> ./include/linux/susfs_def.h
-          for f in $(grep -rl 'SUSFS_IS_INODE' --include='*.c' . 2>/dev/null); do
+          for f in $(grep -rlE 'SUSFS_IS_INODE|DEFAULT_KSU_MNT|VFSMOUNT_MNT_FLAGS_KSU|susfs_is_current_ksu_domain|susfs_is_current_proc_umounted|susfs_is_sdcard_android_data|CL_COPY_MNT_NS' --include='*.c' . 2>/dev/null); do
             grep -q 'susfs_def.h' "$f" || {
               L=$(grep -n '^#include' "$f" | tail -1 | cut -d: -f1)
               [ -n "$L" ] && sed -i "${L}a #include <linux/susfs_def.h>" "$f" && echo "补 include(置于末尾): $f"
