@@ -228,7 +228,7 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             echo "正在配置SukiSU Ultra..."
-            curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s susfs-main
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s susfs_new
             cd ./KernelSU
             # 获取当前 Git 提交的短哈希 (8位)
             GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
@@ -237,7 +237,7 @@ jobs:
             # 尝试最多 3 次获取 KernelSU API 版本号
             for i in {1..3}; do
               # 从远程 Makefile 中提取 KSU_API_VERSION
-              KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/Makefile" | 
+              KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs_new/kernel/Makefile" | 
                 # 查找第一个包含版本定义的行
                 grep -m1 "KSU_VERSION_API :=" | 
                 # 提取等号后的值
@@ -298,12 +298,12 @@ jobs:
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             echo "正在添加SukiSU Ultra补丁..."
             git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
-            git clone https://github.com/ShirkNeko/SukiSU_patch.git
+            git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
             if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
-              cp ./SukiSU_patch/hooks/scope_min_manual_hooks_v1.5.patch ./common/
+              cp ./SukiSU_patch/hooks/scope_min_manual_hooks_v1.6.patch ./common/
             fi
             if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
               cp ./SukiSU_patch/hooks/syscall_hooks.patch ./common/
@@ -312,7 +312,7 @@ jobs:
             cd ./common
             patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
-              patch -p1 < scope_min_manual_hooks_v1.5.patch || true
+              patch -p1 < scope_min_manual_hooks_v1.6.patch || true
             fi
             if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
               patch -p1 < syscall_hooks.patch || true
@@ -367,7 +367,7 @@ jobs:
             echo "正在添加lz4kd补丁…"
             cd kernel_workspace
             if [[ ${{ github.event.inputs.ksu_type }} == "ksunext" ]]; then
-              git clone https://github.com/ShirkNeko/SukiSU_patch.git
+              git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
             fi
             cd common
             cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/
