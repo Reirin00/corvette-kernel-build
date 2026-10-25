@@ -621,6 +621,7 @@ jobs:
           [ "$KSU_IN_UNAME" = "true" ] && [ -n "$KSU_PART" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${KSU_PART}"
           [ -n "$CUSTOM_SUFFIX" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${CUSTOM_SUFFIX}"
           echo "KSU 版本段: $KSU_PART"
+          echo "KSUPART=$KSU_PART" >> $GITHUB_ENV
           echo "最终内核版本后缀：-${FINAL_SUFFIX}"
           echo "KSUFFIX=$FINAL_SUFFIX" >> $GITHUB_ENV
           echo "ksuffix=$FINAL_SUFFIX" >> $GITHUB_OUTPUT
@@ -743,7 +744,10 @@ jobs:
           if [[ "${{ github.event.inputs.lz4_enable }}" == "2" || "${{ github.event.inputs.lz4_enable }}" == "3" ]]; then
             wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8650/refs/heads/main/zram.zip
           fi
-          zip -r "../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_corvette_${{ env.KSUFFIX }}.zip" ./*
+          ZIPNAME="AnyKernel3_corvette_${{ env.CCACHE_TAG }}_${{ env.KSUPART }}"
+          [ -n "${{ github.event.inputs.kernel_suffix }}" ] && ZIPNAME="${ZIPNAME}_${{ github.event.inputs.kernel_suffix }}"
+          echo "产物名: ${ZIPNAME}.zip"
+          zip -r "../${ZIPNAME}.zip" ./*
 
       - name: 上传 Ccache 调试日志
         if: always() && inputs.ccache_debug
