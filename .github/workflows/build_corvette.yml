@@ -410,12 +410,12 @@ jobs:
           grep -q 'ksu_syscall_table_stub_marker' ./drivers/kernelsu/core/init.c 2>/dev/null || {
             echo '/* ksu_syscall_table_stub_marker */' >> ./drivers/kernelsu/core/init.c
             echo '#include <linux/jump_label.h>' >> ./drivers/kernelsu/core/init.c
-            echo 'void *ksu_syscall_table;' >> ./drivers/kernelsu/core/init.c
+            echo 'syscall_fn_t *ksu_syscall_table = NULL;' >> ./drivers/kernelsu/core/init.c
             echo 'DEFINE_STATIC_KEY_TRUE(ksu_is_input_hook_enabled);' >> ./drivers/kernelsu/core/init.c
             echo 'void ksu_syscall_table_hook(void) {}' >> ./drivers/kernelsu/core/init.c
             echo 'void ksu_syscall_table_unhook(void) {}' >> ./drivers/kernelsu/core/init.c
             echo 'void ksu_stop_ksud_execve_hook(void) {}' >> ./drivers/kernelsu/core/init.c
-            echo 'void ksu_clear_task_tracepoint_flag_if_needed(void) {}' >> ./drivers/kernelsu/core/init.c
+            echo 'void ksu_clear_task_tracepoint_flag_if_needed(struct task_struct *t) {}' >> ./drivers/kernelsu/core/init.c
           }
           for f in $(grep -rlE 'SUSFS_IS_INODE|DEFAULT_KSU_MNT|VFSMOUNT_MNT_FLAGS_KSU|susfs_is_current_ksu_domain|susfs_is_current_proc_umounted|susfs_is_sdcard_android_data|CL_COPY_MNT_NS' --include='*.c' . 2>/dev/null); do
             grep -q 'susfs_def.h' "$f" || {
