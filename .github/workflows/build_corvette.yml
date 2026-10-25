@@ -134,6 +134,7 @@ jobs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
       ksublevel: ${{ steps.ccacheconf.outputs.ksublevel }}
       ksuffix: ${{ steps.makename.outputs.ksuffix }}
+      ksupart: ${{ steps.makename.outputs.ksupart }}
     steps:
       - name: 安装环境依赖+初始化源码仓库及llvm-Clang20工具链
         run: |
@@ -622,6 +623,7 @@ jobs:
           [ -n "$CUSTOM_SUFFIX" ] && FINAL_SUFFIX="${FINAL_SUFFIX}-${CUSTOM_SUFFIX}"
           echo "KSU 版本段: $KSU_PART"
           echo "KSUPART=$KSU_PART" >> $GITHUB_ENV
+          echo "ksupart=$KSU_PART" >> $GITHUB_OUTPUT
           echo "最终内核版本后缀：-${FINAL_SUFFIX}"
           echo "KSUFFIX=$FINAL_SUFFIX" >> $GITHUB_ENV
           echo "ksuffix=$FINAL_SUFFIX" >> $GITHUB_OUTPUT
@@ -786,7 +788,7 @@ jobs:
           TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
           echo "TIME=$TIME" >> $GITHUB_ENV
           echo "TIME_FORM=$TIME_FORM" >> $GITHUB_ENV
-          TAG_HEAD="Reirin-corvette-build"
+          TAG_HEAD="Reirin-v6.1.${{ needs.build.outputs.ksublevel }}-${{ needs.build.outputs.ksupart || 'ksusu' }}"
           echo "TAG_HEAD=$TAG_HEAD" >> $GITHUB_ENV
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             KSU_BRANCH="SukiSU Ultra"
@@ -824,7 +826,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "${{ env.TAG_HEAD }}-${{ env.TIME }}"
-          name: "${{ env.TAG_HEAD }}-${{ env.FULL_VERSION }}"
+          name: "${{ env.TAG_HEAD }}"
           body: |
             ### 📱 一加 Ace 3 Pro (corvette/PJX110) 6.1 OKI内核 | 构建信息
             - 内核版本号: ${{ env.FULL_VERSION }}
