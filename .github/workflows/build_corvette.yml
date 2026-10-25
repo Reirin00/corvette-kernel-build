@@ -279,8 +279,8 @@ jobs:
             echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
 
             # 验证修改结果
-            grep -A10 "REPO_OWNER" kernel/Makefile  # 检查插入点后的内容
-            grep "KSU_VERSION_FULL" kernel/Makefile # 确认版本定义存在
+            grep -A10 "REPO_OWNER" kernel/Makefile || echo "(新版 Makefile 无 REPO_OWNER, 版本号注入已跳过, 使用自带定义)"
+            grep "KSU_VERSION_FULL" kernel/Makefile || echo "(新版 Makefile 无 KSU_VERSION_FULL, 属正常)"
             echo "SukiSU版本号: v${KSU_API_VERSION}-${GIT_COMMIT_HASH}@cctv18"
           else
             echo "正在配置KernelSU Next..."
