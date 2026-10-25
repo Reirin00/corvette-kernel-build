@@ -1,22 +1,23 @@
-name: corvette (一加Ace3Pro) 6.1.75 OKI内核
+name: corvette (一加Ace3Pro) 6.1 OKI内核
 
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: 'android14'
   KERNEL_VERSION: '6.1'
-  KERNEL_NAME: 'android14-11-o-g1132d864665d'
+  KERNEL_NAME: 'android14-11-o-gf421ce937631'
 
 on:
   workflow_dispatch:
     inputs:
       source_branch:
-        description: '源码分支(ColorOS 14.1官方分支=默认; ColorOS 15分支; 均为6.1.75)'
+        description: '源码分支(默认6.1.141=ColorOS16用户实测可开机; 其余为corvette官方14.1/15源,均为6.1.75)'
         required: true
         type: choice
-        default: 'oneplus/sm8650_u_14.1.0_oneplus_ace3pro'
+        default: 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
         options:
-          - 'oneplus/sm8650_u_14.1.0_oneplus_ace3pro'
+          - 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
           - 'oneplus/sm8650_v_15.0.0_ace_3_pro'
+          - 'oneplus/sm8650_u_14.1.0_oneplus_ace3pro'
       ksu_type:
         description: 'KernelSU分支(SukiSU Ultra/KernelSU Next,默认SukiSU Ultra)'
         required: true
@@ -100,6 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
+      ksublevel: ${{ steps.ccacheconf.outputs.ksublevel }}
     steps:
       - name: 安装环境依赖+初始化源码仓库及llvm-Clang20工具链
         run: |
@@ -118,8 +120,8 @@ jobs:
           
           echo "正在克隆源码仓库..." &&
           SRC_BRANCH="${{ github.event.inputs.source_branch }}" &&
-          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_u_14.1.0_oneplus_ace3pro" &&
-          DIR_NAME="android_kernel_common_oneplus_sm8650-oneplus-${SRC_BRANCH//\//_}"
+          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12_6.1.141" &&
+          DIR_NAME="android_kernel_common_oneplus_sm8650-oneplus-${SRC_BRANCH//\//}"
           aria2c -s16 -x16 -k1M "https://github.com/cctv18/android_kernel_common_oneplus_sm8650/archive/refs/heads/${SRC_BRANCH}.zip" -o common.zip && 
           unzip -q common.zip && 
           mv "$DIR_NAME" common &&
@@ -146,22 +148,30 @@ jobs:
           done
 
       - name: 配置ccache目录
+        id: ccacheconf
         run: |
-          echo "CCACHE_DIR=$HOME/.ccache_6.1.75_corvette" >> $GITHUB_ENV
+          SRC_BRANCH="${{ github.event.inputs.source_branch }}"
+          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12_6.1.141"
+          VER_TAG=$(grep -m1 SUBLEVEL kernel_workspace/common/Makefile | awk '{print $3}')
+          echo "源码分支: $SRC_BRANCH -> 内核 6.1.$VER_TAG"
+          echo "ksublevel=$VER_TAG" >> $GITHUB_OUTPUT
+          echo "CCACHE_TAG=6.1.$VER_TAG" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache_6.1.$VER_TAG" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
           echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
           echo "当前磁盘空间："
           df -h
-          echo "当前构建内核版本：6.1.75 (corvette/Ace3Pro)"
+          echo "当前构建内核版本：6.1.$VER_TAG (corvette/Ace3Pro)"
 
       - name: 载入当前版本内核的 ccache缓存
         uses: actions/cache@v4
         id: ccache-restore
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-6.1.75-corvette-${{ runner.os }}-main
+          key: ccache-${{ env.CCACHE_TAG }}-corvette-${{ runner.os }}-main
           restore-keys: |
-            ccache-6.1.75-${{ runner.os }}-
-            ccache-6.1.75-
+            ccache-${{ env.CCACHE_TAG }}-corvette-${{ runner.os }}-
+            ccache-${{ env.CCACHE_TAG }}-corvette-
       
       - name: 初始化并配置ccache
         run: |
@@ -400,6 +410,8 @@ jobs:
           echo "CONFIG_ZSTD_COMPRESS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ZSTD_DECOMPRESS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_MQ_IOSCHED_KYBER=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "--- 最终关键 config 预览 ---"
+          grep -nE 'TCP_CONG_ADVANCED|TCP_CONG_BBR|DEFAULT_TCP_CONG|IP_SET=|NETFILTER_XT_SET|KSM=|ZSTD_COMPRESS|ZSTD_DECOMPRESS|MQ_IOSCHED_KYBER|UCLAMP_TASK=|NET_SCH_FQ=' ./common/arch/arm64/configs/gki_defconfig | tail -25
 
       - name: 启用网络功能增强优化配置
         run: |
@@ -659,9 +671,9 @@ jobs:
             wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8650/refs/heads/main/zram.zip
           fi
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_A15_${{ github.event.inputs.kernel_suffix }}.zip ./*
+            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_corvette_${{ github.event.inputs.kernel_suffix }}.zip ./*
           else
-            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_A15_${{ env.KERNEL_NAME }}.zip ./*
+            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_corvette_${{ env.KERNEL_NAME }}.zip ./*
           fi
 
       - name: 上传 Ccache 调试日志
@@ -694,15 +706,11 @@ jobs:
 
       - name: 设置环境变量
         run: |
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            FULL_VERSION=${{ format('{0}.75-{1}', env.KERNEL_VERSION, github.event.inputs.kernel_suffix) }}
-            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-            export FULL_VERSION=$FULL_VERSION
-          else
-            FULL_VERSION=${{ format('{0}.75-{1}', env.KERNEL_VERSION, env.KERNEL_NAME) }}
-            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-            export FULL_VERSION=$FULL_VERSION
-          fi
+          SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+          [ -n "$SUFFIX" ] || SUFFIX="${{ env.KERNEL_NAME }}"
+          FULL_VERSION="6.1.${{ needs.build.outputs.ksublevel }}-${SUFFIX}"
+          echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
+          export FULL_VERSION=$FULL_VERSION
           TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
           TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
           echo "TIME=$TIME" >> $GITHUB_ENV
@@ -747,10 +755,10 @@ jobs:
           tag_name: "${{ env.TAG_HEAD }}-${{ env.TIME }}"
           name: "${{ env.TAG_HEAD }}-${{ env.FULL_VERSION }}"
           body: |
-            ### 📱 一加 Ace 3 Pro (corvette/PJX110) 6.1.75 ${{ env.KSU_BRANCH }} OKI内核 | 构建信息
+            ### 📱 一加 Ace 3 Pro (corvette/PJX110) 6.1 OKI内核 | 构建信息
             - 内核版本号: ${{ env.FULL_VERSION }}
             - 编译时间: ${{ env.TIME_FORM }}
-            - 机型：一加 Ace 3 Pro (corvette/PJX110/SM8650) 6.1.75 专用（基于一加官方 Ace3Pro OKI 源码，源码分支见构建参数）
+            - 机型：一加 Ace 3 Pro (corvette/PJX110/SM8650)（源码分支见构建参数，默认 6.1.141 ColorOS16 适配）
             - 特性：${{ env.KSU_BRANCH }} + SUSFS + VFS + KPM
             - hook模式：${{ github.event.inputs.hook_method }}
             - KPM支持 (仅对sukisu生效)：${{ github.event.inputs.kpm_enable }}
@@ -761,7 +769,7 @@ jobs:
             - 三星SSG IO调度器支持：${{ env.ssg_enable }}
             - Re-Kernel支持：${{ env.rekernel_enable }}
             - 内核级基带保护支持：${{ github.event.inputs.baseband_guard }}
-            - 推荐系统：ColorOS 14.1 / ColorOS 15（须与所选源码分支一致）
+            - 推荐系统：ColorOS 16（默认 6.1.141）；选 14.1/15 分支时对应 ColorOS 14.1/15
             - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
             - KernelSU Next管理器下载：[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
             ### ⏫️ 更新内容：
