@@ -351,7 +351,7 @@ jobs:
             # 复活老式 SUSFS: 新版 KSU Kconfig 已删 KSU_SUSFS 符号组, 注入官方激活补丁
             cd ../KernelSU && \
               cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./ && \
-              awk '/^diff --git /{keep=($3!~/a\/kernel\/(core\/init\.c|hook\/setuid_hook\.c|manager\/pkg_observer\.c|policy\/app_profile\.[ch]|feature\/sucompat\.[ch]|sulog\/event\.[ch]|runtime\/ksud_integration\.c|runtime\/ksud\.h|preinit\/preinit\.[ch])$/)} keep' 10_enable_susfs_for_ksu.patch > 10_filtered.patch && \
+              awk '/^diff --git /{keep=($3!~/a\/kernel\/(core\/init\.c|hook\/setuid_hook\.c|manager\/pkg_observer\.c|policy\/app_profile\.[ch]|feature\/sucompat\.[ch]|sulog\/event\.[ch]|runtime\/ksud_integration\.c|runtime\/ksud\.h|preinit\/preinit\.[ch]|feature\/adb_root\.[ch])$/)} keep' 10_enable_susfs_for_ksu.patch > 10_filtered.patch && \
               { patch -p1 < 10_filtered.patch || echo "(10_enable 部分失败, 见上方)"; } && \
               cd ..
           else
@@ -429,6 +429,11 @@ jobs:
             echo 'void ksu_handle_vfs_fstat(void) {}' >> ./drivers/kernelsu/core/init.c
             echo 'void ksu_handle_stat(void) {}' >> ./drivers/kernelsu/core/init.c
           }
+          # bridge.c 的 setresuid 声明链修复(原生 setuid_hook.h 有原型, bridge 缺 include)
+          grep -q 'ksu_handle_setresuid' ./drivers/kernelsu/hook/syscall_event_bridge.c && {
+            L=$(grep -n '^#include' ./drivers/kernelsu/hook/syscall_event_bridge.c | tail -1 | cut -d: -f1)
+            [ -n "$L" ] && sed -i "${L}a #include \"setuid_hook.h\"" ./drivers/kernelsu/hook/syscall_event_bridge.c && echo "bridge.c 补 include setuid_hook.h"
+          } || true
           # 3) 移除上一版与原生定义重复的 stub 行
           sed -i '/syscall_fn_t \*ksu_syscall_table = NULL;/d; /void ksu_syscall_table_hook/d; /void ksu_syscall_table_unhook/d; /void ksu_clear_task_tracepoint_flag_if_needed/d' ./drivers/kernelsu/core/init.c 2>/dev/null || true
           for f in $(grep -rlE 'SUSFS_IS_INODE|DEFAULT_KSU_MNT|VFSMOUNT_MNT_FLAGS_KSU|susfs_is_current_ksu_domain|susfs_is_current_proc_umounted|susfs_is_sdcard_android_data|CL_COPY_MNT_NS' --include='*.c' . 2>/dev/null); do
