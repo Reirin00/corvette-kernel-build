@@ -10,21 +10,21 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: '源码仓库(默认OnePlusOSS官方=covette专用16代源; cctv18=社区修复镜像, 兜底用)'
+        description: '源码仓库(默认cctv18=社区修复镜像,官方16代源缺kernel/oplus_cpu编不过; OnePlusOSS=官方原始源)'
         required: true
         type: choice
-        default: 'OnePlusOSS'
+        default: 'cctv18'
         options:
-          - 'OnePlusOSS'
           - 'cctv18'
+          - 'OnePlusOSS'
       source_branch:
-        description: '源码分支(默认corvette专用6.1.141/ColorOS16; cctv18备选=oneplus12通用141,用户实测可开机; 其余corvette官方14.1/15源均为6.1.75)'
+        description: '源码分支(默认=cctv18修复版oneplus12通用141,用户实测可开机; OnePlusOSS的16代分支缺oplus_cpu会编译失败; 其余为corvette官方14.1/15源,均6.1.75)'
         required: true
         type: choice
-        default: 'oneplus/sm8650_b_16.0.0_ace_3_pro'
+        default: 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
         options:
-          - 'oneplus/sm8650_b_16.0.0_ace_3_pro'
           - 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
+          - 'oneplus/sm8650_b_16.0.0_ace_3_pro'
           - 'oneplus/sm8650_v_15.0.0_ace_3_pro'
           - 'oneplus/sm8650_u_14.1.0_oneplus_ace3pro'
       ksu_type:
@@ -130,9 +130,9 @@ jobs:
           
           echo "正在克隆源码仓库..." &&
           SRC_REPO="${{ github.event.inputs.source_repo }}" &&
-          [ -n "$SRC_REPO" ] || SRC_REPO="OnePlusOSS" &&
+          [ -n "$SRC_REPO" ] || SRC_REPO="cctv18" &&
           SRC_BRANCH="${{ github.event.inputs.source_branch }}" &&
-          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_ace_3_pro" &&
+          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12_6.1.141" &&
           aria2c -s16 -x16 -k1M "https://github.com/${SRC_REPO}/android_kernel_common_oneplus_sm8650/archive/refs/heads/${SRC_BRANCH}.zip" -o common.zip &&
           unzip -q common.zip &&
           SHADIR=$(ls -d android_kernel_common_oneplus_sm8650-* 2>/dev/null | head -1) &&
@@ -171,7 +171,7 @@ jobs:
         id: ccacheconf
         run: |
           SRC_BRANCH="${{ github.event.inputs.source_branch }}"
-          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_ace_3_pro"
+          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12_6.1.141"
           VER_TAG=$(grep -m1 SUBLEVEL kernel_workspace/common/Makefile | awk '{print $3}')
           echo "源码分支: $SRC_BRANCH -> 内核 6.1.$VER_TAG"
           echo "ksublevel=$VER_TAG" >> $GITHUB_OUTPUT
@@ -645,7 +645,8 @@ jobs:
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image ||
+          { echo "!! 内核编译失败(make), 见上方日志"; exit 1; }
           
           # 编译后时间劫持二次校验
           echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
