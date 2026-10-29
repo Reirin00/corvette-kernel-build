@@ -780,7 +780,7 @@ jobs:
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin gki_defconfig &&
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin Image ||
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld HOSTCFLAGS="-Wno-error -Wno-incompatible-pointer-types-discards-qualifiers" O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin Image ||
           { echo "!! 内核编译失败(make), 见上方日志"; exit 1; }
           
           # 编译后时间劫持二次校验
