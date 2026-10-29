@@ -256,6 +256,14 @@ jobs:
             echo "SukiSU 源码引用: $KSU_REF"
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s "$KSU_REF"
             cd ./KernelSU
+            # setup.sh 克隆的是 main 分支，会随上游漂移；#37 成功时 HEAD 是
+            # v4.2.1-r2-9-g51a7（describe 里的 51a7），此处钉死，保证补丁上下文可复现
+            KSU_PIN=51a7d91fae73ab6693a5d0f068d4059b23524979
+            if ! git checkout -q "$KSU_PIN" 2>/dev/null; then
+              git fetch -q --all 2>/dev/null || git fetch -q --unshallow 2>/dev/null || true
+              git checkout -q "$KSU_PIN" || echo "!! KSU 钉版本失败，继续用 HEAD"
+            fi
+            echo "KSU HEAD = $(git rev-parse --short=8 HEAD)" 
             # 获取当前 Git 提交的短哈希 (8位)
             GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
             echo "当前提交哈希: $GIT_COMMIT_HASH"
