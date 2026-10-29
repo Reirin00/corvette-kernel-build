@@ -324,6 +324,9 @@ jobs:
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             echo "正在添加SukiSU Ultra补丁..."
             git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
+            # 2026-10-27 上游 8b25990 改了 kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
+            # 导致 selinux_hide.c hunk#13 打不上 → 编译失败；钉回 #37 成功时的 27e0a0e
+            git -C susfs4ksu checkout -q 27e0a0e42745991ba09d6f96a97bf4b83f41a012
             git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
