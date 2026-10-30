@@ -414,11 +414,14 @@ jobs:
                 echo "  [FAIL] read hook 门控不是 ksu_is_init_rc_hook_enabled (SUSFS 下 ksu_vfs_read_hook 恒 true)"; exit 1
               fi
               echo "  [OK] 门控 = static_branch_likely(&ksu_is_init_rc_hook_enabled)"
-              # 不允许用 KSU_COMPAT_USE_STATIC_KEY: fs/read_write.c 看不到该宏
-              if grep -qF "KSU_COMPAT_USE_STATIC_KEY" fs/read_write.c; then
-                echo "  [FAIL] fs/read_write.c 里用了 KSU_COMPAT_USE_STATIC_KEY (该宏仅 kernel_compat.h 内可见)"; exit 1
+              # 不允许在代码里用 KSU_COMPAT_USE_STATIC_KEY: fs/read_write.c 看不到该宏。
+              # 注意只查非注释行 —— 补丁的说明注释里会提到这个宏名, 不能误判。
+              if grep -vE '^[[:space:]]*(/\*|\*|//)' fs/read_write.c | grep -qF "KSU_COMPAT_USE_STATIC_KEY"; then
+                echo "  [FAIL] fs/read_write.c 代码里用了 KSU_COMPAT_USE_STATIC_KEY (该宏仅 kernel_compat.h 内可见)"
+                grep -nE "KSU_COMPAT_USE_STATIC_KEY" fs/read_write.c | grep -vE '^[0-9]+:[[:space:]]*(/\*|\*|//)' || true
+                exit 1
               fi
-              echo "  [OK] 未使用 KSU_COMPAT_USE_STATIC_KEY"
+              echo "  [OK] 代码未使用 KSU_COMPAT_USE_STATIC_KEY (注释提及不算)"
 
               echo "=== builtin: 50 号提供的 5 个入口必须健在(且各仅 1 次) ==="
               _bad=0
