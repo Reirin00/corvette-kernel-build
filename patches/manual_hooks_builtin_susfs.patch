@@ -37,7 +37,7 @@ drivers/kernelsu/kernel/kernel_compat.h, 只被 ksu_main.c include, 这里看不
 
 --- a/fs/read_write.c
 +++ b/fs/read_write.c
-@@ -618,8 +618,35 @@
+@@ -618,8 +618,39 @@
  	return ret;
  }
  
@@ -53,9 +53,13 @@ drivers/kernelsu/kernel/kernel_compat.h, 只被 ksu_main.c include, 这里看不
 + *
 + * 注意：不能用 KSU_COMPAT_USE_STATIC_KEY 判断，它定义在
 + * drivers/kernelsu/kernel/kernel_compat.h 里、只被 ksu_main.c include，
-+ * fs/read_write.c 看不到；这里按同样的版本条件（>= 4.3）自行判断。
++ * fs/read_write.c 看不到。
++ * 也不能用 LINUX_VERSION_CODE / KERNEL_VERSION —— 这棵树 fs/read_write.c
++ * 的 include 区不完整，KERNEL_VERSION 根本没定义，内核带 -Wundef 会直接报错。
++ * 版本 >= 4.3 时 static_branch_likely() 在 DONT_SPLIT 下也始终可用，
++ * 所以只判 CONFIG_KSU_SUSFS 就够。
 + */
-+#if defined(CONFIG_KSU_SUSFS) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0))
++#if defined(CONFIG_KSU_SUSFS)
 +#include <linux/jump_label.h>
 +extern struct static_key_true ksu_is_init_rc_hook_enabled;
 +#define ksu_rc_hook_active() static_branch_likely(&ksu_is_init_rc_hook_enabled)
