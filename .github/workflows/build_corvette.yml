@@ -931,6 +931,18 @@ jobs:
           echo "KSUPART=$KSU_PART" >> $GITHUB_ENV
           echo "ksupart=$KSU_PART" >> $GITHUB_OUTPUT
           echo "最终内核版本后缀：-${FINAL_SUFFIX}"
+          # 内核 Makefile:1441 要求 UTS_RELEASE 不超过 64 字符, 超了会在
+          # include/generated/utsrelease.h 阶段直接 Error 1, 报错很不直观。
+          # FINAL_SUFFIX 已含 KERNEL_NAME(6.1.141-android14-11-o-gf421ce937631),
+          # UTS_RELEASE 就是它本身, 不需要再加前缀长度。
+          UTS_LEN=${#FINAL_SUFFIX}
+          echo "UTS_RELEASE 预计长度: $UTS_LEN / 64"
+          if [ "$UTS_LEN" -gt 64 ]; then
+            echo "!!! UTS_RELEASE 将超过 64 字符 (${UTS_LEN}), 请缩短 kernel_suffix 或关闭 ksu_in_uname"
+            echo "    FINAL_SUFFIX = ${FINAL_SUFFIX}"
+            echo "    建议: kernel_suffix 改短 (如 cb), 或 ksu_in_uname=false (可省 ${#KSU_PART}+1 字符)"
+            exit 1
+          fi
           echo "KSUFFIX=$FINAL_SUFFIX" >> $GITHUB_ENV
           echo "ksuffix=$FINAL_SUFFIX" >> $GITHUB_OUTPUT
           for f in ./common/scripts/setlocalversion; do
