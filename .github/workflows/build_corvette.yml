@@ -409,6 +409,16 @@ jobs:
                 echo "  [FAIL] ksu_handle_sys_read 声明签名不是 builtin 版"; exit 1
               fi
               echo "  [OK] 声明签名 = int(fd, char __user **, size_t *)"
+              # 门控必须是 static key: ksu_vfs_read_hook 在 SUSFS 下恒为 true 关不掉
+              if ! grep -qF "static_branch_likely(&ksu_is_init_rc_hook_enabled)" fs/read_write.c; then
+                echo "  [FAIL] read hook 门控不是 ksu_is_init_rc_hook_enabled (SUSFS 下 ksu_vfs_read_hook 恒 true)"; exit 1
+              fi
+              echo "  [OK] 门控 = static_branch_likely(&ksu_is_init_rc_hook_enabled)"
+              # 不允许用 KSU_COMPAT_USE_STATIC_KEY: fs/read_write.c 看不到该宏
+              if grep -qF "KSU_COMPAT_USE_STATIC_KEY" fs/read_write.c; then
+                echo "  [FAIL] fs/read_write.c 里用了 KSU_COMPAT_USE_STATIC_KEY (该宏仅 kernel_compat.h 内可见)"; exit 1
+              fi
+              echo "  [OK] 未使用 KSU_COMPAT_USE_STATIC_KEY"
 
               echo "=== builtin: 50 号提供的 5 个入口必须健在(且各仅 1 次) ==="
               _bad=0

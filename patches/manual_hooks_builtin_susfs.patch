@@ -1,5 +1,5 @@
 SukiSU-Ultra builtin 分支 + SUSFS 的 fs/read_write.c hook 补丁
-适用范围: android14-6.1 (一加 corvette / PJX110 / SM8650)
+适用于 android14-6.1 (一加 corvette / PJX110 / SM8650)
 
 == 只补一个文件, 其余 5 个入口由上游 50 号补丁负责 ==
 上游 50_add_susfs_in_gki-android14-6.1.patch 在 builtin 分支下已经把
@@ -19,35 +19,55 @@ SukiSU-Ultra builtin 分支 + SUSFS 的 fs/read_write.c hook 补丁
   extern __attribute__((cold)) void ksu_handle_sys_read(unsigned int fd);
 而 builtin 分支 kernel/runtime/ksud.c:522 的真实定义是:
   int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
-两者冲突 -> conflicting types 编译失败, 且它先插入会让本补丁 hunk 匹配失败。
+两者返回类型和参数都不同 -> conflicting types, 编译失败;
+且它先插入会让本补丁 hunk 匹配失败。
 所以 workflow 用 awk 把 50 号补丁的 fs/read_write.c 段整段剥掉, 由本补丁接管。
 
-== 开关说明 ==
-SUSFS 下 ksu_install_rc_hook() 内部不再检查 ksu_vfs_read_hook
-(那段判断被 #ifndef CONFIG_KSU_SUSFS 包住), 关门靠 static_key
-ksu_is_init_rc_hook_enabled, 由 ksud.c:486 static_branch_disable 完成。
-本补丁外层用 ksu_vfs_read_hook (无条件定义, ksud.c:32) 做快速过滤,
-避免对每个 read 都进 fget/fput; 真正的 SUSFS 门控仍由 ksud 的 static_key 兜住。
+== 门控为什么用 static key 而不是 ksu_vfs_read_hook ==
+ksu_vfs_read_hook 的唯一赋值点是 stop_vfs_read_hook(), 而它的调用被
+kernel/runtime/ksud.c:478 附近的 #ifndef CONFIG_KSU_SUSFS 排除。
+即 SUSFS 构建里 ksu_vfs_read_hook 恒为 true, 永远关不掉。
+真正关门的是 ksud.c:484 的 static_branch_disable(&ksu_is_init_rc_hook_enabled)。
+若只用 ksu_vfs_read_hook 判断, 每次 read() 都会进 ksu_handle_sys_read()
+做一次无意义的 fget/fput。
+
+注意 KSU_COMPAT_USE_STATIC_KEY 不能在 fs/read_write.c 里用: 它定义在
+drivers/kernelsu/kernel/kernel_compat.h, 只被 ksu_main.c include, 这里看不到。
+本补丁按 kernel_compat.h:253 的同一条件 (LINUX_VERSION_CODE >= 4.3) 自行判断。
 
 --- a/fs/read_write.c
 +++ b/fs/read_write.c
-@@ -618,8 +618,21 @@
+@@ -618,8 +618,35 @@
  	return ret;
  }
  
 +#if defined(CONFIG_KSU)
 +extern bool ksu_vfs_read_hook __read_mostly;
 +extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);
++/*
++ * SUSFS 下 ksu_vfs_read_hook 永远不会被置 false：它唯一的赋值点
++ * stop_vfs_read_hook() 的调用被 ksud.c 里的 #ifndef CONFIG_KSU_SUSFS 排除，
++ * 真正关门用的是 static_branch_disable(&ksu_is_init_rc_hook_enabled)。
++ * 所以这里必须跟 ksud 用同一个开关，否则每次 read() 都会进
++ * ksu_handle_sys_read() 白做一次 fget/fput。
++ *
++ * 注意：不能用 KSU_COMPAT_USE_STATIC_KEY 判断，它定义在
++ * drivers/kernelsu/kernel/kernel_compat.h 里、只被 ksu_main.c include，
++ * fs/read_write.c 看不到；这里按同样的版本条件（>= 4.3）自行判断。
++ */
++#if defined(CONFIG_KSU_SUSFS) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0))
++#include <linux/jump_label.h>
++extern struct static_key_true ksu_is_init_rc_hook_enabled;
++#define ksu_rc_hook_active() static_branch_likely(&ksu_is_init_rc_hook_enabled)
++#else
++#define ksu_rc_hook_active() unlikely(ksu_vfs_read_hook)
++#endif
 +#endif
 +
  SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
  {
 +#if defined(CONFIG_KSU)
-+	/*
-+	 * SUSFS 模式下 ksud 用 static_key 自己关门, ksu_vfs_read_hook 仅作
-+	 * 非 SUSFS 的兜底开关; 这里两条都用上, 保证 SUSFS / 非 SUSFS 都能关掉。
-+	 */
-+	if (unlikely(ksu_vfs_read_hook))
++	if (ksu_rc_hook_active())
 +		ksu_handle_sys_read(fd, &buf, &count);
 +#endif
  	return ksys_read(fd, buf, count);
