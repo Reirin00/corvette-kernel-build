@@ -430,14 +430,15 @@ jobs:
                 echo "--- $_p"
                 patch -p1 < "$_p" || { echo "!!! $_p 打不上, include 会缺, 编译必炸"; exit 1; }
               done
-              # base.c / namespace.c 由 guard 补丁统一处理(含 h/pid.h)
+              # base.c / namespace.c 由 guard 补丁统一处理(只插 susfs_def.h)
               echo "--- susfs_include_guard.patch"
               patch -p1 < susfs_include_guard.patch || { echo "!!! guard 补丁打不上"; exit 1; }
               echo "=== builtin: include 落点校验(缺一个就是 undeclared) ==="
+              # 注意: 不要校验 fs/proc/h/pid.h —— 这棵树没有 fs/proc/h/ 目录, 上游 50 号也不插,
+              # 插了就是 'h/pid.h' file not found(#54 教训)。
               _ibad=0
               for _pair in \
                 "fs/proc/base.c:linux/susfs_def.h" \
-                "fs/proc/base.c:h/pid.h" \
                 "fs/namespace.c:linux/susfs_def.h" \
                 "fs/proc/task_mmu.c:linux/susfs_def.h" \
                 "fs/exec.c:linux/susfs_def.h" ; do

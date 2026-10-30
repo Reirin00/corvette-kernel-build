@@ -1,6 +1,6 @@
 --- a/fs/proc/base.c
 +++ b/fs/proc/base.c
-@@ -96,9 +96,19 @@
+@@ -96,9 +96,14 @@
  #include <linux/time_namespace.h>
  #include <linux/resctrl.h>
  #include <linux/cn_proc.h>
@@ -12,11 +12,6 @@
  #include <linux/cpufreq_times.h>
  #include <trace/events/oom.h>
  #include <trace/hooks/sched.h>
-+#ifndef KSU_SUSFS_PID_H
-+#if defined(CONFIG_KSU_SUSFS_SUS_PATH) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
-+#include "h/pid.h"
-+#endif // susfs group
-+#endif // KSU_SUSFS_PID_H
  #include "internal.h"
  #include "fd.h"
  
