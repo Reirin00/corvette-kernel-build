@@ -351,7 +351,32 @@ jobs:
             cd ./common
             patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
-              patch -p1 < scope_min_manual_hooks_v1.6.patch || true
+              echo "=== manual 补丁 dry-run 预检 ==="
+              patch -p1 --dry-run < scope_min_manual_hooks_v1.6.patch || echo "!!! manual 补丁 dry-run 有 FAILED hunk (下方实际打时看详情)"
+              patch -p1 < scope_min_manual_hooks_v1.6.patch || echo "!!! manual 补丁实际打时有失败"
+              echo "=== manual 补丁落点校验(6 个调用点必须全在) ==="
+              MANUAL_MAX=6
+              MANUAL_HIT=0
+              for probe in \
+                "drivers/input/input.c:ksu_handle_input_handle_event" \
+                "fs/exec.c:ksu_handle_execve_sucompat" \
+                "fs/open.c:ksu_handle_faccessat" \
+                "fs/read_write.c:ksu_handle_sys_read" \
+                "fs/stat.c:ksu_handle_stat" \
+                "kernel/reboot.c:ksu_handle_sys_reboot" ; do
+                f="${probe%%:*}"; sym="${probe##*:}"
+                if grep -q "$sym" "$f" 2>/dev/null; then
+                  echo "  [OK]   $f <- $sym"
+                  MANUAL_HIT=$((MANUAL_HIT+1))
+                else
+                  echo "  [MISS] $f 缺少 $sym"
+                fi
+              done
+              echo "manual 落点: $MANUAL_HIT/$MANUAL_MAX"
+              if [ "$MANUAL_HIT" -lt "$MANUAL_MAX" ]; then
+                echo "!!! manual hook 不完整($MANUAL_HIT/$MANUAL_MAX)，su 路径会异常，中止构建"
+                exit 1
+              fi
             fi
             if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
               patch -p1 < syscall_hooks.patch || true
