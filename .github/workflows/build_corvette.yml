@@ -28,14 +28,15 @@ on:
           - 'oneplus/sm8650_v_15.0.0_ace_3_pro'
           - 'oneplus/sm8650_u_14.1.0_oneplus_ace3pro'
       ksu_ref:
-        description: 'SukiSU Ultra 源码引用(默认v4.2.1-r2=当前最新发布tag; susfs_new=7月susfs适配线; main=开发线)'
+        description: 'SukiSU Ultra 源码分支(builtin=手动hook分支,提权走execveat_sucompat,不用LSM提权; main=运行时kprobes/tracepoint,需GKI完整符号)'
         required: true
         type: choice
-        default: 'v4.2.1-r2'
+        default: 'builtin'
         options:
+          - 'builtin'
+          - 'main'
           - 'v4.2.1-r2'
           - 'susfs_new'
-          - 'main'
       extra_tweaks:
         description: '是否追加 KSM/ZSTD_COMPRESS/ZSTD_DECOMPRESS/KYBER(排查不开机可关, 已知可开机包无KSM/ZSTD_C)'
         required: true
@@ -252,16 +253,21 @@ jobs:
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             echo "正在配置SukiSU Ultra..."
             KSU_REF="${{ github.event.inputs.ksu_ref }}"
-            [ -n "$KSU_REF" ] || KSU_REF="v4.2.1-r2"
+            [ -n "$KSU_REF" ] || KSU_REF="builtin"
             echo "SukiSU 源码引用: $KSU_REF"
             curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s "$KSU_REF"
             cd ./KernelSU
-            # setup.sh 克隆的是 main 分支，会随上游漂移；#37 成功时 HEAD 是
-            # v4.2.1-r2-9-g51a7（describe 里的 51a7），此处钉死，保证补丁上下文可复现
-            KSU_PIN=51a7d91fae73ab6693a5d0f068d4059b23524979
-            if ! git checkout -q "$KSU_PIN" 2>/dev/null; then
-              git fetch -q --all 2>/dev/null || git fetch -q --unshallow 2>/dev/null || true
-              git checkout -q "$KSU_PIN" || echo "!! KSU 钉版本失败，继续用 HEAD"
+            # setup.sh 克隆的是 main 分支，会随上游漂移；钉死保证补丁上下文可复现。
+            # builtin 分支不钉 commit（该分支更新频率低，且我们的补丁按函数上下文匹配，
+            # 不依赖精确行号；钉错 commit 反而会导致 checkout 到不存在的对象）。
+            if [ "$KSU_REF" = "builtin" ]; then
+              echo "builtin 分支，不钉 commit，HEAD = $(git rev-parse --short=8 HEAD)"
+            else
+              KSU_PIN=51a7d91fae73ab6693a5d0f068d4059b23524979
+              if ! git checkout -q "$KSU_PIN" 2>/dev/null; then
+                git fetch -q --all 2>/dev/null || git fetch -q --unshallow 2>/dev/null || true
+                git checkout -q "$KSU_PIN" || echo "!! KSU 钉版本失败，继续用 HEAD"
+              fi
             fi
             echo "KSU HEAD = $(git rev-parse --short=8 HEAD)" 
             # 获取当前 Git 提交的短哈希 (8位)
@@ -339,10 +345,18 @@ jobs:
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-            if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
+            # ---- builtin 分支：用我们自己的 manual hook 补丁 ----
+            # SUSFS 模式下 hook 入口签名是 struct filename **，旧补丁传 const char __user **
+            # 会被当 struct filename ** 解引用 -> panic -> 15 秒重启。
+            # 我们的补丁插在已持有 struct filename* 的位置（do_execveat / vfs_fstatat）。
+            if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
+              cp "${{ github.workspace }}/patches/manual_hooks_builtin_susfs.patch" ./common/
+              echo "==> builtin 分支：使用 patches/manual_hooks_builtin_susfs.patch"
+            fi
+            if [[ ${{ github.event.inputs.hook_method }} == "manual" && "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
               cp ./SukiSU_patch/hooks/scope_min_manual_hooks_v1.6.patch ./common/
             fi
-            if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
+            if [[ ${{ github.event.inputs.hook_method }} == "syscall" && "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
               cp ./SukiSU_patch/hooks/syscall_hooks.patch ./common/
             fi
             if [[ ${{ github.event.inputs.hook_method }} != "lsm" ]]; then
@@ -350,7 +364,43 @@ jobs:
             fi
             cd ./common
             patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
-            if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
+            # ---- builtin 分支：打我们自己的补丁并校验 ----
+            if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
+              echo "=== builtin manual hook 补丁 dry-run 预检 ==="
+              patch -p1 --dry-run < manual_hooks_builtin_susfs.patch || { echo "!!! dry-run 有 FAILED hunk"; exit 1; }
+              patch -p1 < manual_hooks_builtin_susfs.patch || { echo "!!! 补丁应用失败"; exit 1; }
+              echo "=== builtin hook 落点校验(6 个接口必须全在) ==="
+              BH_MAX=6; BH_HIT=0
+              for probe in \
+                "fs/exec.c:ksu_handle_execveat(&fd" \
+                "fs/exec.c:ksu_handle_execveat_sucompat(&fd" \
+                "fs/stat.c:ksu_handle_stat(&dfd" \
+                "fs/read_write.c:ksu_handle_sys_read(fd" \
+                "kernel/reboot.c:ksu_handle_sys_reboot(magic1" \
+                "kernel/sys.c:ksu_handle_setresuid(ruid" ; do
+                f="${probe%%:*}"; sym="${probe##*:}"
+                if grep -qF "$sym" "$f" 2>/dev/null; then
+                  echo "  [OK]   $f <- $sym"; BH_HIT=$((BH_HIT+1))
+                else
+                  echo "  [MISS] $f 缺少 $sym"
+                fi
+              done
+              echo "builtin 落点: $BH_HIT/$BH_MAX"
+              [ "$BH_HIT" -lt "$BH_MAX" ] && { echo "!!! builtin hook 不完整，中止"; exit 1; }
+              # 校验插入点类型正确性：必须是 struct filename ** 而非 const char __user **
+              echo "=== 类型校验（防再次踩 const char __user ** 坑）==="
+              if grep -q "ksu_handle_execveat_sucompat(&fd, &filename" fs/exec.c; then
+                echo "  [OK] exec.c 传 &filename（struct filename *）"
+              else
+                echo "  [FAIL] exec.c 插入点类型不对"; exit 1
+              fi
+              if grep -q "ksu_handle_stat(&dfd, &name" fs/stat.c; then
+                echo "  [OK] stat.c 传 &name（struct filename *）"
+              else
+                echo "  [FAIL] stat.c 插入点类型不对"; exit 1
+              fi
+            fi
+            if [[ ${{ github.event.inputs.hook_method }} == "manual" && "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
               echo "=== manual 补丁 dry-run 预检 ==="
               patch -p1 --dry-run < scope_min_manual_hooks_v1.6.patch || echo "!!! manual 补丁 dry-run 有 FAILED hunk (下方实际打时看详情)"
               patch -p1 < scope_min_manual_hooks_v1.6.patch || echo "!!! manual 补丁实际打时有失败"
@@ -385,11 +435,30 @@ jobs:
               patch -p1 < 69_hide_stuff.patch || true
             fi
             # 复活老式 SUSFS: 新版 KSU Kconfig 已删 KSU_SUSFS 符号组, 注入官方激活补丁
+            #
+            # !!! builtin 分支必须跳过 10_enable !!!
+            # 10_enable 是给「main 分支」写的：它的 kernel/Kbuild hunk 会把
+            # drivers/kernelsu/Kbuild 换成 main 分支的 hook obj 列表
+            # (hook/syscall_hook_manager.o / hook/arm64/syscall_hook.o ...)，
+            # 而 builtin 分支根本没有 hook/arm64 目录 -> 编译直接炸。
+            # 另外它还会往 core/init.c 里塞 ksu_syscall_table_* 之类只在 main 分支
+            # 才有的符号。builtin 分支本身 SUSFS 支持是原生的（Kconfig 里就有
+            # KSU_SUSFS 整组，sucompat.h 里也有 #ifdef CONFIG_KSU_SUSFS 分支），
+            # 完全不需要 10_enable。
+            if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
+              echo "==> builtin 分支：跳过 10_enable_susfs_for_ksu.patch（该补丁只适用于 main 分支）"
+              echo "    依据：builtin/kernel/Kconfig 已原生包含 KSU_SUSFS 整组配置项"
+              grep -q "config KSU_SUSFS" KernelSU/kernel/Kconfig \
+                && echo "    [OK] builtin Kconfig 原生含 KSU_SUSFS" \
+                || { echo "    !!! builtin Kconfig 少了 KSU_SUSFS，SUSFS 会编不到"; exit 1; }
+            else
             cd ../KernelSU && \
               cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./ && \
               awk '/^diff --git /{keep=($3!~/a\/kernel\/(core\/init\.c|hook\/setuid_hook\.c|manager\/pkg_observer\.c|policy\/app_profile\.[ch]|feature\/sucompat\.[ch]|sulog\/event\.[ch]|runtime\/ksud_integration\.c|runtime\/ksud\.h|preinit\/preinit\.[ch]|feature\/adb_root\.[ch])$/)} keep' 10_enable_susfs_for_ksu.patch > 10_filtered.patch && \
               { patch -p1 < 10_filtered.patch || echo "(10_enable 部分失败, 见上方)"; } && \
               cd ..
+            fi
+
           else
             echo "正在添加KernelSU Next补丁..."
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
@@ -440,6 +509,23 @@ jobs:
           echo 'extern bool susfs_is_current_ksu_domain(void);' >> ./include/linux/susfs_def.h
           echo 'extern bool susfs_is_current_proc_umounted(void);' >> ./include/linux/susfs_def.h
           echo 'extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;' >> ./include/linux/susfs_def.h
+
+          # ===== builtin 分支到此为止，下面全是 main 分支专用的 10_enable 善后 =====
+          # builtin 分支没打 10_enable，drivers/kernelsu 目录结构也不同
+          # （没有 core/init.c、没有 hook/arm64/、没有 hook/syscall_event_bridge.c），
+          # 若继续执行下面的自愈逻辑会 append 出一堆死文件和错误 Kbuild obj 行。
+          if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
+            echo "==> builtin 分支：跳过 10_enable 善后自愈（Kbuild/stub/setresuid 全部不适用）"
+            echo "    drivers/kernelsu 顶层实际内容："
+            ls -1 ./drivers/kernelsu/ | head -20
+            echo "    [校验] builtin 必须有 ksu_main.c（单文件 include 模式）："
+            test -f ./drivers/kernelsu/ksu_main.c && echo "      [OK] ksu_main.c 存在" \
+              || { echo "      !!! 没有 ksu_main.c，说明拉的不是 builtin 分支"; exit 1; }
+            # susfs_def.h 已补好，builtin 下 drivers/kernelsu 走的是原生 Makefile
+            # （obj-$(CONFIG_KSU) := ksu.o，单文件 include 模式），不需要任何自愈
+            :
+          else
+          # ===== 以下仅 main 分支 =====
           # ksu.h 原生声明被 10_enable 改动挤掉, 补回
           grep -q 'extern bool ksu_late_loaded' ./drivers/kernelsu/include/ksu.h 2>/dev/null || echo 'extern bool ksu_late_loaded;' >> ./drivers/kernelsu/include/ksu.h
           # 链接期修复 v2
@@ -482,6 +568,7 @@ jobs:
               [ -n "$L" ] && sed -i "${L}a #include <linux/susfs_def.h>" "$f" && echo "补 include(置于末尾): $f"
             }
           done
+          fi
           echo "--- 兜底完成 ---"
 
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
@@ -514,14 +601,66 @@ jobs:
             patch -p1 -F 3 < lz4kd.patch || true
           fi
           
+      - name: 修正 KSU 头文件搜索顺序(仅 builtin)
+        run: |
+          # 背景：builtin/kernel/Makefile 里写了
+          #   ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
+          # 其中 KSU_KERNEL_DIR = <kernel>/drivers/kernelsu。
+          # 但 setup.sh 在加 -I 的同时还会写
+          #   ccflags-y += -include $(srctree)/drivers/kernelsu/include/kernel_compat.h
+          # 而 kernel_compat.h 内部第一句就是
+          #   #include <linux/anon_inodes.h>
+          # 此时 -I drivers/kernelsu 在 -I drivers/kernelsu/include 之前，
+          # 于是 #include <linux/xxx.h> 会先命中 drivers/kernelsu/include/linux/xxx.h。
+          # builtin 分支的 kernel/include/ 下并没有 linux/ 子目录，
+          # 但 main 分支有 —— 两个分支的 setup.sh 行为不同，
+          # 所以这里统一改成「只保留 -I <KSU>/include」，去掉冗余的 -I <KSU>。
+          cd kernel_workspace/KernelSU
+          if [[ "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
+            echo "非 builtin 分支，保持 setup.sh 原样，跳过"
+            exit 0
+          fi
+          echo "=== 修正前 ==="
+          grep -n "ccflags-y += -I" kernel/Makefile | head -20
+          echo "=== kernel/include 下是否有 linux/ 子目录 ==="
+          ls kernel/include/ | head -20
+          if [ -d kernel/include/linux ]; then
+            echo "  [注意] builtin 意外存在 kernel/include/linux/"
+            ls kernel/include/linux | head
+          else
+            echo "  [OK] builtin 没有 kernel/include/linux/，`-I <KSU>` 只会引入 kernel/include/ 的镜像"
+          fi
+          # 只删被我们判定为多余的 `-I$(KSU_KERNEL_DIR)`（后面不带 /include 的那条）
+          sed -i 's|^ccflags-y += -I\$(KSU_KERNEL_DIR) -I\$(KSU_KERNEL_DIR)/include$|ccflags-y += -I$(KSU_KERNEL_DIR)/include|' kernel/Makefile
+          echo "=== 修正后 ==="
+          grep -n "ccflags-y += -I" kernel/Makefile | head -20
+          grep -q '^ccflags-y += -I\$(KSU_KERNEL_DIR)/include$' kernel/Makefile \
+            || echo "  [提示] 未匹配到标准写法，Makefile 可能已变，人工复核"
+
       - name: 添加KSU & SUSFS 配置项
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # ---- builtin 分支：清理不存在的 SUSFS 配置项，否则 defconfig 会被 Kconfig 静默丢弃 ----
+          # builtin/kernel/Kconfig 只定义了这些：KSU / KSU_FEATURE_ADBROOT / KSU_DEBUG / KPM
+          # 以及 KSU_SUSFS + (SUS_PATH|SUS_MOUNT|SUS_KSTAT|SPOOF_UNAME|ENABLE_LOG|
+          # HIDE_KSU_SUSFS_SYMBOLS|SPOOF_CMDLINE_OR_BOOTCONFIG|OPEN_REDIRECT|SUS_MAP)。
+          # 下面这些是 main 分支 10_enable 注入的符号，builtin 里没有 -> 必须不写：
+          #   KSU_SUSFS_HAS_MAGIC_MOUNT / SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+          #   SUSFS_AUTO_ADD_SUS_BIND_MOUNT / SUSFS_TRY_UMOUNT
+          #   SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+          # 写了不会报错（Kconfig 直接丢掉），但会让"配置生效校验"失去意义。
+          if [ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]; then
+            echo "builtin 分支：只写 builtin/kernel/Kconfig 里真实存在的 SUSFS 项"
+          fi
           if [[ ${{ github.event.inputs.kpm_enable }} == 'true' && ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
-          if [ "${{ github.event.inputs.hook_method }}" == "kprobes" ]; then
+          if [ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]; then
+            # builtin 分支：hook 方式由源码内的手动入口决定，Kconfig 里没有任何 hook 开关。
+            # 写了也是摆设（Kconfig 未定义 + 源码 0 引用），所以什么都不写。
+            echo "builtin 分支：不写 hook 相关 config 项（该分支无此类 Kconfig 选项）"
+          elif [ "${{ github.event.inputs.hook_method }}" == "kprobes" ]; then
             echo "正在开启kprobes钩子..."
             echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_MANUAL_HOOK=n" >> ./common/arch/arm64/configs/gki_defconfig
@@ -537,6 +676,14 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          if [ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]; then
+            # builtin/kernel/Kconfig 里真实存在的 SUSFS 项（逐个核对过，见 Kconfig 原文）
+            for c in KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT \
+           KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+           KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
+              echo "CONFIG_$c=y" >> ./common/arch/arm64/configs/gki_defconfig
+            done
+          else
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -550,6 +697,7 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
           #添加对 Mountify (backslashxx/mountify) 模块的支持
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -807,7 +955,68 @@ jobs:
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld HOSTCFLAGS="-Wno-error -Wno-incompatible-pointer-types-discards-qualifiers" O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin Image ||
           { echo "!! 内核编译失败(make), 见上方日志"; exit 1; }
-          
+
+          # ===== 编译后 .config 回读校验 =====
+          # 为什么必须做：往 gki_defconfig 里 echo 的每一行，只要 Kconfig 没定义这个符号，
+          # 就会被 conf 阶段**静默丢弃**，编译照样成功，但功能根本没进去。
+          # 历史上 #37 就是死在这里：写了 CONFIG_KSU_MANUAL_HOOK=y，Kconfig 里没这个符号，
+          # 结果 manual 补丁的 6 个调用点全被 #if 掉，内核编出来是双 hook 并行 -> 15 秒重启。
+          CFG=out/.config
+          echo "==================== 最终 .config 回读校验 ===================="
+          [ -f "$CFG" ] || { echo "!!! $CFG 不存在，编译流程异常"; exit 1; }
+
+          FAIL=0
+          must_y() {
+            for sym in "$@"; do
+              if grep -qx "CONFIG_$sym=y" "$CFG"; then
+                echo "  [OK]   CONFIG_$sym"
+              else
+                echo "  [FAIL] CONFIG_$sym 未生效（被 Kconfig 丢弃或被依赖项挡住）"
+                FAIL=$((FAIL+1))
+              fi
+            done
+          }
+          must_absent() {
+            for sym in "$@"; do
+              if grep -q "^CONFIG_$sym[= ]" "$CFG"; then
+                echo "  [WARN] CONFIG_$sym 意外存在，值：$(grep "^CONFIG_$sym[= ]" "$CFG" | head -1)"
+              else
+                echo "  [OK]   CONFIG_$sym 不存在（符合预期）"
+              fi
+            done
+          }
+
+          echo "-- 核心开关 --"
+          must_y KSU
+
+          if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
+            echo "-- builtin：SUSFS 组（builtin/kernel/Kconfig 真实存在的项）--"
+            must_y KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT \
+                   KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                   KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP
+            echo "-- builtin：确认 main 分支专属符号一个都没混进来 --"
+            must_absent KSU_SUSFS_HAS_MAGIC_MOUNT KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+              KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT KSU_SUSFS_TRY_UMOUNT \
+              KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
+            echo "-- 所有 hook 开关宏（两个分支都不存在，写了一定是错）--"
+            must_absent KSU_MANUAL_HOOK KSU_LSM_HOOKS KSU_KPROBES_HOOK KSU_MANUAL_SU
+          else
+            echo "-- 非 builtin：至少确认 SUSFS 主开关 --"
+            must_y KSU_SUSFS
+          fi
+
+          echo "-- KSU 版本号（用于和 manager APK 对照）--"
+          grep -E "^CONFIG_(KSU|KSU_SUSFS)=" "$CFG" | head -5
+          echo "-- 编译器 --"
+          grep -E "^CONFIG_(CC_IS_CLANG|CLANG_VERSION|CC_VERSION_TEXT)" "$CFG" | head -3
+
+          echo "============================================================="
+          if [ "$FAIL" -ne 0 ]; then
+            echo "!!! 有 $FAIL 个关键 CONFIG 未生效，中止。不要拿这个包去刷机。"
+            exit 1
+          fi
+          echo "config 校验全部通过"
+
           # 编译后时间劫持二次校验
           echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
           echo "--- 编译后环境文件时间戳: ---"
