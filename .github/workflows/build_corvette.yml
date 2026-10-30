@@ -491,9 +491,21 @@ jobs:
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
               echo "==> builtin 分支：跳过 10_enable_susfs_for_ksu.patch（该补丁只适用于 main 分支）"
               echo "    依据：builtin/kernel/Kconfig 已原生包含 KSU_SUSFS 整组配置项"
-              grep -q "config KSU_SUSFS" KernelSU/kernel/Kconfig \
+              # 注意: 本段当前工作目录是 common/, KernelSU 在 kernel_workspace/KernelSU,
+              # 所以必须用 ../KernelSU 或 drivers/kernelsu (setup.sh 建的软链)。
+              KSU_KCONFIG=""
+              for _c in drivers/kernelsu/kernel/Kconfig ../KernelSU/kernel/Kconfig; do
+                [ -f "$_c" ] && { KSU_KCONFIG="$_c"; break; }
+              done
+              if [ -z "$KSU_KCONFIG" ]; then
+                echo "    !!! 找不到 KSU Kconfig, 下面列一下候选位置:"
+                ls -ld drivers/kernelsu ../KernelSU 2>&1 || true
+                exit 1
+              fi
+              echo "    KSU Kconfig = $KSU_KCONFIG"
+              grep -q "config KSU_SUSFS" "$KSU_KCONFIG" \
                 && echo "    [OK] builtin Kconfig 原生含 KSU_SUSFS" \
-                || { echo "    !!! builtin Kconfig 少了 KSU_SUSFS，SUSFS 会编不到"; exit 1; }
+                || { echo "    !!! $KSU_KCONFIG 少了 KSU_SUSFS，SUSFS 会编不到"; exit 1; }
             else
             cd ../KernelSU && \
               cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./ && \
