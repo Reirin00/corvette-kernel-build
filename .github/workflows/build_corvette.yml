@@ -364,6 +364,15 @@ jobs:
               [ -f "$BH_PATCH" ] || { echo "!!! 找不到 $BH_PATCH"; ls -la "${{ github.workspace }}" || true; exit 1; }
               cp "$BH_PATCH" ./common/
               echo "==> builtin 分支：使用 patches/manual_hooks_builtin_susfs.patch"
+              # 50 号里三处 include hunk 在这棵 oneplus 树上上下文对不上(base.c / namespace.c 的
+              # include 区没有空行, 也没有 trace/hooks/blk.h), patch 返回 FAILED 但被 `|| echo` 吞掉,
+              # 结果 susfs_def.h 没被 include -> 编译期 SUSFS_IS_INODE_* undeclared。见 #52。
+              for _p in susfs_include_guard.patch susfs_include_task_mmu.patch; do
+                _f="${{ github.workspace }}/selfrepo/patches/$_p"
+                [ -f "$_f" ] || { echo "!!! 找不到 $_f"; ls -la "${{ github.workspace }}/selfrepo/patches" || true; exit 1; }
+                cp "$_f" ./common/
+              done
+              echo "==> builtin 分支：使用 patches/susfs_include_{guard,task_mmu}.patch 兜底 include"
             fi
             if [[ ${{ github.event.inputs.hook_method }} == "manual" && "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
               cp ./SukiSU_patch/hooks/scope_min_manual_hooks_v1.6.patch ./common/
@@ -379,15 +388,55 @@ jobs:
             # 50 号这段用的是 main 分支签名 void ksu_handle_sys_read(unsigned int fd)，
             # 而 builtin 的真实定义是 int ksu_handle_sys_read(unsigned int, char __user **, size_t *)，
             # 两者冲突 -> conflicting types；且先插入会让本补丁 hunk 匹配失败。
+            #
+            # 同时剥掉 4 个文件——它们的 include 在新树上必然失败(旧 main 树有该行/空行, 这棵树没有),
+            # 失败的 hunk 会被 patch 丢掉、后面的 hunk 照打 -> 编译期 undeclared。改由
+            # susfs_include_guard.patch / susfs_include_task_mmu.patch 用带 #ifndef 守卫的
+            # anchor hunk 兜底插入, 落点与 50 号完全等价且可重复应用。
+            #   base.c      : cn_proc.h 后没有 dma-buf.h + 空行
+            #   namespace.c : 没有 trace/hooks/blk.h, mnt_idmapping.h 后没有空行
+            #   task_mmu.c  : 偏移命中但风险同样高(这行 include 一变就静默丢)
+            #   exec.c      : 同 base.c 类问题, 提前接管
             SUSFS50=50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
-              awk '/^diff --git /{keep=($3!="a/fs/read_write.c")} keep' "$SUSFS50" > 50_filtered.patch
+              strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/namespace.c a/fs/proc/task_mmu.c a/fs/exec.c"
+              awk -v list="$strip_files" 'BEGIN{n=split(list,a," ");for(i=1;i<=n;i++)skip[a[i]]=1}
+                /^diff --git /{keep=!($3 in skip)} keep' "$SUSFS50" > 50_filtered.patch
               _tot=$(grep -c "^diff --git" "$SUSFS50")
               _kept=$(grep -c "^diff --git" 50_filtered.patch)
-              echo "==> 剥离 fs/read_write.c 段: $_tot -> $_kept 个文件段"
-              if [ "$_tot" -le "$_kept" ]; then echo "!!! 剥离失败, 50 号仍包含 fs/read_write.c"; exit 1; fi
-              if grep -q "^diff --git a/fs/read_write.c" 50_filtered.patch; then echo "!!! 仍残留 read_write.c 段"; exit 1; fi
-              patch -p1 < 50_filtered.patch || echo "(50 号部分 hunk 未打上, 见上方; 非 read_write.c 的失败不影响 hook)"
+              echo "==> 剥离 5 段(去 read_write + 4 个 include 冲突文件): $_tot -> $_kept 个文件段"
+              if [ "$_tot" -le "$_kept" ]; then echo "!!! 剥离失败"; exit 1; fi
+              if [ $(( _tot - _kept )) -ne 5 ]; then
+                echo "!!! 期望剥掉 5 段, 实际 $(( _tot - _kept )) 段 — 50 号上游内容变了, 请核对"
+                grep -n "^diff --git" "$SUSFS50" | head -40
+                exit 1
+              fi
+              for _x in fs/read_write.c fs/proc/base.c fs/namespace.c fs/proc/task_mmu.c fs/exec.c; do
+                grep -q "^diff --git a/$_x " 50_filtered.patch && { echo "!!! 仍残留 $_x 段"; exit 1; }
+              done
+              patch -p1 < 50_filtered.patch || echo "(50 号部分 hunk 未打上, 见上方; 非 hook 相关失败不影响)"
+              # 兜底 include 补丁（失败必须中止, 这里的静默失败就是 #52 的根因）
+              echo "=== builtin: SUSFS include 兜底补丁 ==="
+              for _p in susfs_include_guard.patch susfs_include_task_mmu.patch; do
+                echo "--- $_p"
+                patch -p1 < "$_p" || { echo "!!! $_p 打不上, include 会缺, 编译必炸"; exit 1; }
+              done
+              echo "=== builtin: include 落点校验(缺一个就是 undeclared) ==="
+              _ibad=0
+              for _pair in \
+                "fs/proc/base.c:linux/susfs_def.h" \
+                "fs/proc/base.c:h/pid.h" \
+                "fs/namespace.c:linux/susfs_def.h" \
+                "fs/proc/task_mmu.c:linux/susfs_def.h" \
+                "fs/exec.c:linux/susfs_def.h" ; do
+                _f="${_pair%%:*}"; _h="${_pair##*:}"
+                if grep -qF "#include <$_h>" "$_f" || grep -qF "#include \"$_h\"" "$_f"; then
+                  echo "  [OK]   $_f <- $_h"
+                else
+                  echo "  [FAIL] $_f 缺少 #include <$_h>"; _ibad=$((_ibad+1))
+                fi
+              done
+              [ "$_ibad" -eq 0 ] || { echo "!!! include 落点缺失, 中止(否则 fs/proc/base.o 必报 undeclared)"; exit 1; }
             else
               patch -p1 < "$SUSFS50" || true
             fi

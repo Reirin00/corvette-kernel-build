@@ -1,0 +1,14 @@
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -21,6 +21,11 @@
+ #include <linux/uaccess.h>
+ #include <linux/pkeys.h>
+ #include <trace/hooks/mm.h>
++#ifndef KSU_SUSFS_DEF_H
++#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
++#include <linux/susfs_def.h>
++#endif // susfs group
++#endif // KSU_SUSFS_DEF_H
+ 
+ #include <asm/elf.h>
+ #include <asm/tlb.h>
