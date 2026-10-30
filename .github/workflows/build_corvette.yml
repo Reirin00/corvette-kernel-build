@@ -375,42 +375,60 @@ jobs:
               cp ./SukiSU_patch/69_hide_stuff.patch ./common/
             fi
             cd ./common
-            patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
+            # ---- builtin 分支：剥掉 50 号的 fs/read_write.c 段 ----
+            # 50 号这段用的是 main 分支签名 void ksu_handle_sys_read(unsigned int fd)，
+            # 而 builtin 的真实定义是 int ksu_handle_sys_read(unsigned int, char __user **, size_t *)，
+            # 两者冲突 -> conflicting types；且先插入会让本补丁 hunk 匹配失败。
+            SUSFS50=50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
+            if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
+              awk '/^diff --git /{keep=($3!="a/fs/read_write.c")} keep' "$SUSFS50" > 50_filtered.patch
+              _tot=$(grep -c "^diff --git" "$SUSFS50")
+              _kept=$(grep -c "^diff --git" 50_filtered.patch)
+              echo "==> 剥离 fs/read_write.c 段: $_tot -> $_kept 个文件段"
+              if [ "$_tot" -le "$_kept" ]; then echo "!!! 剥离失败, 50 号仍包含 fs/read_write.c"; exit 1; fi
+              if grep -q "^diff --git a/fs/read_write.c" 50_filtered.patch; then echo "!!! 仍残留 read_write.c 段"; exit 1; fi
+              patch -p1 < 50_filtered.patch || echo "(50 号部分 hunk 未打上, 见上方; 非 read_write.c 的失败不影响 hook)"
+            else
+              patch -p1 < "$SUSFS50" || true
+            fi
             # ---- builtin 分支：打我们自己的补丁并校验 ----
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
               echo "=== builtin manual hook 补丁 dry-run 预检 ==="
               patch -p1 --dry-run < manual_hooks_builtin_susfs.patch || { echo "!!! dry-run 有 FAILED hunk"; exit 1; }
               patch -p1 < manual_hooks_builtin_susfs.patch || { echo "!!! 补丁应用失败"; exit 1; }
-              echo "=== builtin hook 落点校验(6 个接口必须全在) ==="
-              BH_MAX=6; BH_HIT=0
+              # 只校验 fs/read_write.c（本补丁唯一负责的文件）；其余 5 个入口由 50 号补丁提供。
+              echo "=== builtin: fs/read_write.c hook 校验 ==="
+              if ! grep -qF "ksu_handle_sys_read(fd, &buf, &count)" fs/read_write.c; then
+                echo "  [FAIL] fs/read_write.c 缺少 ksu_handle_sys_read(fd, &buf, &count)"; exit 1
+              fi
+              _n=$(grep -cF "ksu_handle_sys_read(fd" fs/read_write.c)
+              echo "  [OK] fs/read_write.c <- ksu_handle_sys_read  ($_n 处)"
+              [ "$_n" -eq 1 ] || { echo "!!! ksu_handle_sys_read 出现 $_n 次, 期望 1 次(重复调用)"; exit 1; }
+              # 签名必须与 builtin 的 int(fd, char __user **, size_t *) 一致
+              if ! grep -qF "extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);" fs/read_write.c; then
+                echo "  [FAIL] ksu_handle_sys_read 声明签名不是 builtin 版"; exit 1
+              fi
+              echo "  [OK] 声明签名 = int(fd, char __user **, size_t *)"
+
+              echo "=== builtin: 50 号提供的 5 个入口必须健在(且各仅 1 次) ==="
+              _bad=0
               for probe in \
                 "fs/exec.c:ksu_handle_execveat(&fd" \
                 "fs/exec.c:ksu_handle_execveat_sucompat(&fd" \
                 "fs/stat.c:ksu_handle_stat(&dfd" \
-                "fs/read_write.c:ksu_handle_sys_read(fd" \
                 "kernel/reboot.c:ksu_handle_sys_reboot(magic1" \
                 "kernel/sys.c:ksu_handle_setresuid(ruid" ; do
                 f="${probe%%:*}"; sym="${probe##*:}"
-                if grep -qF "$sym" "$f" 2>/dev/null; then
-                  echo "  [OK]   $f <- $sym"; BH_HIT=$((BH_HIT+1))
+                c=$(grep -cF "$sym" "$f" 2>/dev/null || echo 0)
+                if [ "$c" -eq 1 ]; then
+                  echo "  [OK]   $f <- $sym"
+                elif [ "$c" -eq 0 ]; then
+                  echo "  [FAIL] $f 缺少 $sym (50 号补丁没打上?)"; _bad=$((_bad+1))
                 else
-                  echo "  [MISS] $f 缺少 $sym"
+                  echo "  [FAIL] $f 中 $sym 出现 $c 次(重复调用)"; _bad=$((_bad+1))
                 fi
               done
-              echo "builtin 落点: $BH_HIT/$BH_MAX"
-              [ "$BH_HIT" -lt "$BH_MAX" ] && { echo "!!! builtin hook 不完整，中止"; exit 1; }
-              # 校验插入点类型正确性：必须是 struct filename ** 而非 const char __user **
-              echo "=== 类型校验（防再次踩 const char __user ** 坑）==="
-              if grep -q "ksu_handle_execveat_sucompat(&fd, &filename" fs/exec.c; then
-                echo "  [OK] exec.c 传 &filename（struct filename *）"
-              else
-                echo "  [FAIL] exec.c 插入点类型不对"; exit 1
-              fi
-              if grep -q "ksu_handle_stat(&dfd, &name" fs/stat.c; then
-                echo "  [OK] stat.c 传 &name（struct filename *）"
-              else
-                echo "  [FAIL] stat.c 插入点类型不对"; exit 1
-              fi
+              [ "$_bad" -eq 0 ] || { echo "!!! 50 号 hook 落点异常, 中止"; exit 1; }
             fi
             if [[ ${{ github.event.inputs.hook_method }} == "manual" && "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
               echo "=== manual 补丁 dry-run 预检 ==="

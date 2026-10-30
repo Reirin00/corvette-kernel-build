@@ -1,115 +1,37 @@
-Subject: [PATCH] corvette 6.1 builtin hooks for SukiSU builtin branch + SUSFS
+SukiSU-Ultra builtin 分支 + SUSFS 的 fs/read_write.c hook 补丁
+适用范围: android14-6.1 (一加 corvette / PJX110 / SM8650)
 
-== 为什么需要这个补丁 ==
-builtin 分支不自己 hook syscall，它只提供若干函数，等内核在 syscall 入口调用：
+== 只补一个文件, 其余 5 个入口由上游 50 号补丁负责 ==
+上游 50_add_susfs_in_gki-android14-6.1.patch 在 builtin 分支下已经把
+下面这些 hook 全部接好, 本补丁不再重复插入(重复会导致 reboot/setresuid
+被调用两次):
+  fs/exec.c     do_execveat_common()  -> ksu_handle_execveat()
+                                       + ksu_handle_execveat_sucompat()
+                                       (含 susfs_is_current_proc_no_su 快路径、
+                                        static_branch 门控、preinit 处理)
+  fs/stat.c     vfs_fstatat()         -> ksu_handle_stat()
+                                       (含 __ksu_is_allow_uid_for_current 白名单)
+  kernel/reboot.c  SYSCALL_DEFINE4(reboot) -> ksu_handle_sys_reboot()
+  kernel/sys.c     __sys_setresuid()  -> ksu_handle_setresuid()
 
-  fs/exec.c       do_execveat()               -> ksu_handle_execveat()
-                                               + ksu_handle_execveat_sucompat()
-  fs/stat.c       vfs_fstatat()               -> ksu_handle_stat()
-  fs/read_write.c SYSCALL_DEFINE3(read)       -> ksu_handle_sys_read()
-  kernel/reboot.c SYSCALL_DEFINE4(reboot)     -> ksu_handle_sys_reboot()
-  kernel/sys.c    __sys_setresuid()           -> ksu_handle_setresuid()
-                     (仅 CONFIG_KSU_SUSFS 时，见下方第 4 条)
+== 为什么唯独 fs/read_write.c 要自己补 ==
+50 号补丁里这一段的声明是 main 分支的签名:
+  extern __attribute__((cold)) void ksu_handle_sys_read(unsigned int fd);
+而 builtin 分支 kernel/runtime/ksud.c:522 的真实定义是:
+  int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
+两者冲突 -> conflicting types 编译失败, 且它先插入会让本补丁 hunk 匹配失败。
+所以 workflow 用 awk 把 50 号补丁的 fs/read_write.c 段整段剥掉, 由本补丁接管。
 
-== 为什么要写这个补丁(而不是用 SukiSU_patch 的现成补丁) ==
-1) 现成补丁(scope_min_manual_hooks_v1.6 / syscall_hooks)全部调用点都包在
-   `#if defined(CONFIG_KSU_MANUAL_HOOK)` 里，而该宏在 v4.1.1+ 的 Kconfig
-   里已被删除（builtin 和 main 分支都不存在）-> 一个调用点都编不进去。
-   本补丁改用 `#if defined(CONFIG_KSU)`，两个分支都能编，不写任何 hook 宏。
-2) CONFIG_KSU_SUSFS=y 时 hook 入口签名是 struct filename **：
-     ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, ...)
-     ksu_handle_stat(int *dfd, struct filename **filename, int *flags)
-   旧补丁插在 SYSCALL_DEFINE3(execve) 里传 &filename（const char __user **），
-   hook 侧 *filename_ptr 拿到的是用户态字符串指针，再 ->name 解引用
-   -> 读非法地址 -> panic -> 15 秒重启。
-   本补丁改插在已经持有 struct filename * 的位置：
-     do_execveat()  参数就是 struct filename *filename
-     vfs_fstatat()  getname_flags() 之后拿到的 name 已经是 struct filename *
-3) 补插 ksu_handle_execveat()：builtin 分支的 ksud.c 里 init second_stage /
-   zygote 识别、selinux rules 应用、allowlist 加载全在这个函数里。
-   不插它 = 没有 allowlist = 所有 su 调用被拒。
-4) 补插 ksu_handle_setresuid()：builtin 的 hook/lsm_hook.c 里
-     #ifndef CONFIG_KSU_SUSFS
-         LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid),
-     #endif
-   SUSFS 一开，task_fix_setuid 这个 LSM 项就整条被排除了，改由
-   ksu_handle_setresuid()（#ifdef CONFIG_KSU_SUSFS 下的全局函数）承担
-   同等职责：判断新 uid 是否 zygote/zygote_next 派生的 app ->
-   susfs_set_current_proc_no_su/umounted + ksu_handle_umount，
-   以及给 manager 装 fd（ksu_install_fd）。
-   而全树搜索 ksu_handle_setresuid 只有定义、零个调用者。
-   不插它 = SUSFS 的隐藏/umount 对 app 全部失效、manager 可能拿不到 fd。
-   插入点选在 security_task_fix_setuid 成功之后、commit_creds 之前：
-   此时 cred 已校验完，失败路径不会走到，不会对即将 abort 的 cred 产生副作用。
+== 开关说明 ==
+SUSFS 下 ksu_install_rc_hook() 内部不再检查 ksu_vfs_read_hook
+(那段判断被 #ifndef CONFIG_KSU_SUSFS 包住), 关门靠 static_key
+ksu_is_init_rc_hook_enabled, 由 ksud.c:486 static_branch_disable 完成。
+本补丁外层用 ksu_vfs_read_hook (无条件定义, ksud.c:32) 做快速过滤,
+避免对每个 read 都进 fget/fput; 真正的 SUSFS 门控仍由 ksud 的 static_key 兜住。
 
-== faccessat 故意不插 ==
-do_faccessat 内部用 user_path_at() 自行 getname，外部拿不到 struct filename*；
-改造要动 retry 循环，风险远大于收益。该入口只影响 which su 之类探测，
-不影响提权（提权在 execveat_sucompat 的 escape_with_root_profile()）。
-
-== 未插 ksu_handle_input_handle_event ==
-builtin 的该函数是 __maybe_unused 的旧接口，实际走 input_handler 注册
-(vol_detector_handler)，不需要内核侧调用点。
---- a/fs/exec.c
-+++ b/fs/exec.c
-@@ -2057,6 +2057,13 @@
- 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
- }
- 
-+#if defined(CONFIG_KSU)
-+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-+			       void *argv, void *envp, int *flags);
-+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-+					void *argv_user, void *envp_user, int *flags);
-+#endif
-+
- static int do_execveat(int fd, struct filename *filename,
- 		const char __user *const __user *__argv,
- 		const char __user *const __user *__envp,
-@@ -2065,6 +2072,16 @@
- 	struct user_arg_ptr argv = { .ptr.native = __argv };
- 	struct user_arg_ptr envp = { .ptr.native = __envp };
- 
-+#if defined(CONFIG_KSU)
-+	/* ksu_handle_execveat 负责 init second_stage / zygote 识别 +
-+	 * selinux rules + allowlist 加载；漏了它 su 会因为 allowlist 空被拒。
-+	 * sucompat 负责 /system/bin/su -> /data/adb/ksud 替换并提权。
-+	 * 两者都必须传 &filename（struct filename **），SUSFS 模式下 hook 侧
-+	 * 会解引用 *filename_ptr 再读 ->name。 */
-+	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-+	ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-+#endif
-+
- 	return do_execveat_common(fd, filename, argv, envp, flags);
- }
- 
---- a/fs/stat.c
-+++ b/fs/stat.c
-@@ -256,6 +256,10 @@
- 	return error;
- }
- 
-+#if defined(CONFIG_KSU)
-+extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
-+#endif
-+
- int vfs_fstatat(int dfd, const char __user *filename,
- 			      struct kstat *stat, int flags)
- {
-@@ -264,6 +268,10 @@
- 	struct filename *name;
- 
- 	name = getname_flags(filename, getname_statx_lookup_flags(statx_flags), NULL);
-+#if defined(CONFIG_KSU)
-+	/* stat("/system/bin/su") 时把 name 改写成 sh_path，让 app 探测到 su 存在 */
-+	ksu_handle_stat(&dfd, &name, &flags);
-+#endif
- 	ret = vfs_statx(dfd, name, statx_flags, stat, STATX_BASIC_STATS);
- 	putname(name);
- 
 --- a/fs/read_write.c
 +++ b/fs/read_write.c
-@@ -618,8 +618,18 @@
+@@ -618,8 +618,21 @@
  	return ret;
  }
  
@@ -121,67 +43,13 @@ builtin 的该函数是 __maybe_unused 的旧接口，实际走 input_handler �
  SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
  {
 +#if defined(CONFIG_KSU)
-+	/* 只在 ksud 需要拦截 init.rc 读取时启用，否则一条 unlikely 分支就走开 */
++	/*
++	 * SUSFS 模式下 ksud 用 static_key 自己关门, ksu_vfs_read_hook 仅作
++	 * 非 SUSFS 的兜底开关; 这里两条都用上, 保证 SUSFS / 非 SUSFS 都能关掉。
++	 */
 +	if (unlikely(ksu_vfs_read_hook))
 +		ksu_handle_sys_read(fd, &buf, &count);
 +#endif
  	return ksys_read(fd, buf, count);
  }
  
---- a/kernel/reboot.c
-+++ b/kernel/reboot.c
-@@ -701,6 +701,10 @@
-  *
-  * reboot doesn't sync: do that yourself before calling this.
-  */
-+#if defined(CONFIG_KSU)
-+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
-+#endif
-+
- SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
- 		void __user *, arg)
- {
-@@ -708,6 +712,12 @@
- 	char buffer[256];
- 	int ret = 0;
- 
-+#if defined(CONFIG_KSU)
-+	/* ksud 用 reboot(0xDEADBEEF, ...) 取 KSU fd；必须在 CAP_SYS_BOOT
-+	 * 检查之前返回，否则普通 app 永远拿不到 fd。 */
-+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-+#endif
-+
- 	/* We only trust the superuser with rebooting the system. */
- 	if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))
- 		return -EPERM;
---- a/kernel/sys.c
-+++ b/kernel/sys.c
-@@ -655,6 +655,10 @@
- }
- 
- 
-+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
-+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-+#endif
-+
- /*
-  * This function implements a generic ability to update ruid, euid,
-  * and suid.  This allows you to implement the 4.4 compatible seteuid().
-@@ -722,6 +726,17 @@
- 	if (retval < 0)
- 		goto error;
- 
-+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
-+	/* builtin 分支 + SUSFS 时，hook/lsm_hook.c 里 task_fix_setuid 项被
-+	 * #ifndef CONFIG_KSU_SUSFS 排除掉，改由本函数承担 OLD SESU 语义：
-+	 * 判断新 uid 是否是 zygote/zygote_next 派生的 app，决定要不要
-+	 * susfs_set_current_proc_no_su/umounted + ksu_handle_umount，
-+	 * 以及 manager 的 ksu_install_fd。
-+	 * 注意必须在 security_task_fix_setuid 成功之后调用：此时 cred 已校验完，
-+	 * 失败路径不会走到这里，避免对即将 abort 的 cred 做副作用。 */
-+	ksu_handle_setresuid(ruid, euid, suid);
-+#endif
-+
- 	retval = set_cred_ucounts(new);
- 	if (retval < 0)
- 		goto error;
