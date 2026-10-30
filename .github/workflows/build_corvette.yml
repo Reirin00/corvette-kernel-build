@@ -389,38 +389,50 @@ jobs:
             # 而 builtin 的真实定义是 int ksu_handle_sys_read(unsigned int, char __user **, size_t *)，
             # 两者冲突 -> conflicting types；且先插入会让本补丁 hunk 匹配失败。
             #
-            # 同时剥掉 4 个文件——它们的 include 在新树上必然失败(旧 main 树有该行/空行, 这棵树没有),
-            # 失败的 hunk 会被 patch 丢掉、后面的 hunk 照打 -> 编译期 undeclared。改由
-            # susfs_include_guard.patch / susfs_include_task_mmu.patch 用带 #ifndef 守卫的
-            # anchor hunk 兜底插入, 落点与 50 号完全等价且可重复应用。
-            #   base.c      : cn_proc.h 后没有 dma-buf.h + 空行
-            #   namespace.c : 没有 trace/hooks/blk.h, mnt_idmapping.h 后没有空行
-            #   task_mmu.c  : 偏移命中但风险同样高(这行 include 一变就静默丢)
-            #   exec.c      : 同 base.c 类问题, 提前接管
+            # 另外只剥 fs/exec.c 的 include hunk —— 它的 hunk#2~#4 是全补丁里唯一必须成功的
+            # su 路径 hook，剥整段会把 hook 一起丢掉(#53 就是这么炸的)。exec.c 改由
+            # awk 原位替换那 6 行 include，保留其后所有 hunk。
+            #
+            # base.c / namespace.c / task_mmu.c 的 include hunk 在新树上必然 FAILED(旧树有该行/空行,
+            # 这棵树没有)，失败的 hunk 会被 patch 丢掉、后面的 hunk 照打 -> 编译期 undeclared。
+            # 这三个文件整段剥掉，改由 susfs_include_guard.patch / susfs_include_task_mmu.patch
+            # 用带 #ifndef 守卫的 anchor hunk 兜底插入，落点与 50 号等价且可重复应用。
             SUSFS50=50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
-              strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/namespace.c a/fs/proc/task_mmu.c a/fs/exec.c"
+              strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/namespace.c a/fs/proc/task_mmu.c"
               awk -v list="$strip_files" 'BEGIN{n=split(list,a," ");for(i=1;i<=n;i++)skip[a[i]]=1}
                 /^diff --git /{keep=!($3 in skip)} keep' "$SUSFS50" > 50_filtered.patch
               _tot=$(grep -c "^diff --git" "$SUSFS50")
               _kept=$(grep -c "^diff --git" 50_filtered.patch)
-              echo "==> 剥离 5 段(去 read_write + 4 个 include 冲突文件): $_tot -> $_kept 个文件段"
-              if [ "$_tot" -le "$_kept" ]; then echo "!!! 剥离失败"; exit 1; fi
-              if [ $(( _tot - _kept )) -ne 5 ]; then
-                echo "!!! 期望剥掉 5 段, 实际 $(( _tot - _kept )) 段 — 50 号上游内容变了, 请核对"
+              echo "==> 剥离 4 段(去 read_write + 3 个 include 冲突文件): $_tot -> $_kept 个文件段"
+              if [ $(( _tot - _kept )) -ne 4 ]; then
+                echo "!!! 期望剥掉 4 段, 实际 $(( _tot - _kept )) 段 — 50 号上游内容变了, 请核对"
                 grep -n "^diff --git" "$SUSFS50" | head -40
                 exit 1
               fi
-              for _x in fs/read_write.c fs/proc/base.c fs/namespace.c fs/proc/task_mmu.c fs/exec.c; do
+              for _x in fs/read_write.c fs/proc/base.c fs/namespace.c fs/proc/task_mmu.c; do
                 grep -q "^diff --git a/$_x " 50_filtered.patch && { echo "!!! 仍残留 $_x 段"; exit 1; }
               done
+              # exec.c 的 include 原位替换(awk 脚本单独放文件, 内联 awk 在 mawk 下比较字符串会失效)
+              EXECFIX="${{ github.workspace }}/selfrepo/patches/exec_include_guard.awk"
+              [ -f "$EXECFIX" ] || { echo "!!! 找不到 $EXECFIX"; exit 1; }
+              awk -f "$EXECFIX" 50_filtered.patch > 50_execfix.patch || { echo "!!! exec include 改写失败"; exit 1; }
+              if [ "$(grep -c '^\+#endif // KSU_SUSFS_DEF_H' 50_execfix.patch)" -ne 1 ]; then
+                echo "!!! exec.c include 改写结果异常(标记数 != 1)"
+                grep -n "KSU_SUSFS_DEF_H" 50_execfix.patch | head -10
+                exit 1
+              fi
+              mv 50_execfix.patch 50_filtered.patch
               patch -p1 < 50_filtered.patch || echo "(50 号部分 hunk 未打上, 见上方; 非 hook 相关失败不影响)"
               # 兜底 include 补丁（失败必须中止, 这里的静默失败就是 #52 的根因）
               echo "=== builtin: SUSFS include 兜底补丁 ==="
-              for _p in susfs_include_guard.patch susfs_include_task_mmu.patch; do
+              for _p in susfs_include_task_mmu.patch; do
                 echo "--- $_p"
                 patch -p1 < "$_p" || { echo "!!! $_p 打不上, include 会缺, 编译必炸"; exit 1; }
               done
+              # base.c / namespace.c 由 guard 补丁统一处理(含 h/pid.h)
+              echo "--- susfs_include_guard.patch"
+              patch -p1 < susfs_include_guard.patch || { echo "!!! guard 补丁打不上"; exit 1; }
               echo "=== builtin: include 落点校验(缺一个就是 undeclared) ==="
               _ibad=0
               for _pair in \
@@ -481,7 +493,7 @@ jobs:
                 "kernel/reboot.c:ksu_handle_sys_reboot(magic1" \
                 "kernel/sys.c:ksu_handle_setresuid(ruid" ; do
                 f="${probe%%:*}"; sym="${probe##*:}"
-                c=$(grep -cF "$sym" "$f" 2>/dev/null || echo 0)
+                c=$(grep -cF "$sym" "$f" 2>/dev/null); c=${c:-0}
                 if [ "$c" -eq 1 ]; then
                   echo "  [OK]   $f <- $sym"
                 elif [ "$c" -eq 0 ]; then
