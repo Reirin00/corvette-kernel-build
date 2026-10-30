@@ -137,6 +137,16 @@ jobs:
       ksuffix: ${{ steps.makename.outputs.ksuffix }}
       ksupart: ${{ steps.makename.outputs.ksupart }}
     steps:
+      - name: 检出本仓库(仅取 patches/, 供 builtin manual hook 补丁使用)
+        uses: actions/checkout@v4
+        with:
+          # 只取自身仓库到独立子目录, 不干扰后面对内核源码的 zip 下载流程
+          path: selfrepo
+          sparse-checkout: |
+            patches
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: 安装环境依赖+初始化源码仓库及llvm-Clang20工具链
         run: |
           rm -rf kernel_workspace
@@ -350,7 +360,9 @@ jobs:
             # 会被当 struct filename ** 解引用 -> panic -> 15 秒重启。
             # 我们的补丁插在已持有 struct filename* 的位置（do_execveat / vfs_fstatat）。
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
-              cp "${{ github.workspace }}/patches/manual_hooks_builtin_susfs.patch" ./common/
+              BH_PATCH="${{ github.workspace }}/selfrepo/patches/manual_hooks_builtin_susfs.patch"
+              [ -f "$BH_PATCH" ] || { echo "!!! 找不到 $BH_PATCH"; ls -la "${{ github.workspace }}" || true; exit 1; }
+              cp "$BH_PATCH" ./common/
               echo "==> builtin 分支：使用 patches/manual_hooks_builtin_susfs.patch"
             fi
             if [[ ${{ github.event.inputs.hook_method }} == "manual" && "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
