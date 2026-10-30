@@ -367,7 +367,7 @@ jobs:
               # 50 号里三处 include hunk 在这棵 oneplus 树上上下文对不上(base.c / namespace.c 的
               # include 区没有空行, 也没有 trace/hooks/blk.h), patch 返回 FAILED 但被 `|| echo` 吞掉,
               # 结果 susfs_def.h 没被 include -> 编译期 SUSFS_IS_INODE_* undeclared。见 #52。
-              for _p in susfs_include_guard.patch susfs_include_task_mmu.patch; do
+              for _p in susfs_include_guard.patch susfs_include_task_mmu.patch susfs_mnt_helpers.patch; do
                 _f="${{ github.workspace }}/selfrepo/patches/$_p"
                 [ -f "$_f" ] || { echo "!!! 找不到 $_f"; ls -la "${{ github.workspace }}/selfrepo/patches" || true; exit 1; }
                 cp "$_f" ./common/
@@ -450,6 +450,35 @@ jobs:
                 fi
               done
               [ "$_ibad" -eq 0 ] || { echo "!!! include 落点缺失, 中止(否则 fs/proc/base.o 必报 undeclared)"; exit 1; }
+
+              # ---- namespace.c 的两个全局 mnt 辅助函数 ----
+              # #56 链接期错误: undefined symbol: susfs_get_non_sus_mnt_id_from_mnt /
+              # susfs_get_non_sus_vfsmnt_from_vfsmnt, 被 fs/proc/fd.c:109 和 fs/statfs.c:153 引用。
+              # 这两个函数定义在 50 号 fs/namespace.c 段的文件末尾(init_fs_namespace_sysctls 之后),
+              # 而 namespace.c 整段被我们剥掉了(它的 include hunk 在这棵树上对不上), 调用方却留着。
+              # 所以单独把这两个函数补回 namespace.c 尾部, 而不是去救整个 namespace.c 段
+              # (那个段的 SUS_MOUNT/SUS_KSTAT 改动依赖大量对不上的上下文, 救了也是半成品)。
+              echo "=== builtin: namespace.c mnt 辅助函数补丁 ==="
+              [ -f susfs_mnt_helpers.patch ] || { echo "!!! 找不到 susfs_mnt_helpers.patch"; exit 1; }
+              patch -p1 --dry-run < susfs_mnt_helpers.patch || { echo "!!! susfs_mnt_helpers.patch dry-run FAILED"; exit 1; }
+              patch -p1 < susfs_mnt_helpers.patch || { echo "!!! susfs_mnt_helpers.patch 打不上"; exit 1; }
+              _mbad=0
+              for _sym in susfs_get_non_sus_mnt_id_from_mnt susfs_get_non_sus_vfsmnt_from_vfsmnt; do
+                _c=$(grep -cE "^[a-zA-Z_].*[ *]${_sym}\(" fs/namespace.c); _c=${_c:-0}
+                if [ "$_c" -eq 1 ]; then
+                  echo "  [OK]   fs/namespace.c 定义 $_sym"
+                else
+                  echo "  [FAIL] fs/namespace.c 定义 $_sym 出现 $_c 次 (期望 1)"; _mbad=$((_mbad+1))
+                fi
+              done
+              [ "$_mbad" -eq 0 ] || { echo "!!! mnt 辅助函数缺失/重复, 链接必报 undefined symbol"; exit 1; }
+              # 调用方也必须还在(否则说明上面剥多了, 隐藏挂载会失效)
+              for _pair in "fs/proc/fd.c:susfs_get_non_sus_mnt_id_from_mnt" "fs/statfs.c:susfs_get_non_sus_vfsmnt_from_vfsmnt"; do
+                _f="${_pair%%:*}"; _s="${_pair##*:}"
+                _c=$(grep -cF "$_s" "$_f"); _c=${_c:-0}
+                [ "$_c" -ge 1 ] && echo "  [OK]   $_f 仍调用 $_s ($_c 处)" || { echo "  [FAIL] $_f 丢失了对 $_s 的调用"; _mbad=$((_mbad+1)); }
+              done
+              [ "$_mbad" -eq 0 ] || { echo "!!! 调用方与定义不匹配"; exit 1; }
             else
               patch -p1 < "$SUSFS50" || true
             fi
