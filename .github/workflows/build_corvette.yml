@@ -342,6 +342,31 @@ jobs:
             sed -i "s/DKSU_VERSION=11998/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
           fi
 
+          # ---- 隐藏性：LSM 注册名不能叫 "ksu" ----
+          # ksu_lsm_hook_init() 里 security_add_hooks(..., "ksu") 会把这个名字写进
+          # /sys/kernel/security/lsm，读出来就是 "capability,selinux,ksu" —— 等于挂牌。
+          # 本内核只编了 capability + selinux，没编 landlock，所以借它的名字最自然：
+          # 改完显示 "capability,selinux,landlock"，和一台正常 Android 设备无异。
+          # 注意：动的只是显示名，hook 行为完全不变；SELinux domain 的 "ksu"
+          # （KERNEL_SU_DOMAIN，见 kernel/selinux/selinux.h）是 sepolicy 要用的，不能碰。
+          if [ -f kernel/hook/lsm_hook.c ]; then
+            if grep -q 'ARRAY_SIZE(ksu_hooks), "ksu"' kernel/hook/lsm_hook.c; then
+              sed -i 's/ARRAY_SIZE(ksu_hooks), "ksu"/ARRAY_SIZE(ksu_hooks), "landlock"/' kernel/hook/lsm_hook.c
+              echo "  [OK] LSM 注册名 ksu -> landlock"
+            else
+              echo "  !!! lsm_hook.c 找不到 ARRAY_SIZE(ksu_hooks), \"ksu\" —— 上游改了，请核对"
+              grep -n "security_add_hooks" kernel/hook/lsm_hook.c || true
+              exit 1
+            fi
+            if grep -q 'ARRAY_SIZE(ksu_hooks), "ksu"' kernel/hook/lsm_hook.c; then
+              echo "  [FAIL] 改名没生效"; exit 1
+            fi
+            grep -n "security_add_hooks" kernel/hook/lsm_hook.c
+          else
+            echo "  !!! 找不到 kernel/hook/lsm_hook.c (cwd=$(pwd))，LSM 名改不了"
+            exit 1
+          fi
+
       - name: 应用 KernelSU & SUSFS 补丁
         run: |
           cd kernel_workspace
@@ -367,7 +392,7 @@ jobs:
               # 50 号里三处 include hunk 在这棵 oneplus 树上上下文对不上(base.c / namespace.c 的
               # include 区没有空行, 也没有 trace/hooks/blk.h), patch 返回 FAILED 但被 `|| echo` 吞掉,
               # 结果 susfs_def.h 没被 include -> 编译期 SUSFS_IS_INODE_* undeclared。见 #52。
-              for _p in susfs_include_guard.patch susfs_include_task_mmu.patch susfs_mnt_helpers.patch; do
+              for _p in susfs_include_guard.patch susfs_include_task_mmu.patch susfs_namespace_full.patch; do
                 _f="${{ github.workspace }}/selfrepo/patches/$_p"
                 [ -f "$_f" ] || { echo "!!! 找不到 $_f"; ls -la "${{ github.workspace }}/selfrepo/patches" || true; exit 1; }
                 cp "$_f" ./common/
@@ -399,18 +424,22 @@ jobs:
             # 用带 #ifndef 守卫的 anchor hunk 兜底插入，落点与 50 号等价且可重复应用。
             SUSFS50=50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
-              strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/namespace.c a/fs/proc/task_mmu.c"
+              # namespace.c 不再整段剥：实测它的 10 个 hunk 里只有 include 那个对不上，
+              # 其余 9 个(含 119 行的 susfs_alloc_*_ksu_vfsmnt、fake mnt_id、CL_COPY_MNT_NS)
+              # 在这棵树上只有 offset、0 FAILED。整段剥掉 = SUS_MOUNT 残废，隐藏性大打折扣。
+              # 改为由 patches/susfs_namespace_full.patch 提供「修正版 include + 原 9 个 hunk」。
+              strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/proc/task_mmu.c"
               awk -v list="$strip_files" 'BEGIN{n=split(list,a," ");for(i=1;i<=n;i++)skip[a[i]]=1}
                 /^diff --git /{keep=!($3 in skip)} keep' "$SUSFS50" > 50_filtered.patch
               _tot=$(grep -c "^diff --git" "$SUSFS50")
               _kept=$(grep -c "^diff --git" 50_filtered.patch)
-              echo "==> 剥离 4 段(去 read_write + 3 个 include 冲突文件): $_tot -> $_kept 个文件段"
-              if [ $(( _tot - _kept )) -ne 4 ]; then
-                echo "!!! 期望剥掉 4 段, 实际 $(( _tot - _kept )) 段 — 50 号上游内容变了, 请核对"
+              echo "==> 剥离 3 段(去 read_write + 2 个 include 冲突文件; namespace.c 单独重做): $_tot -> $_kept 个文件段"
+              if [ $(( _tot - _kept )) -ne 3 ]; then
+                echo "!!! 期望剥掉 3 段, 实际 $(( _tot - _kept )) 段 — 50 号上游内容变了, 请核对"
                 grep -n "^diff --git" "$SUSFS50" | head -40
                 exit 1
               fi
-              for _x in fs/read_write.c fs/proc/base.c fs/namespace.c fs/proc/task_mmu.c; do
+              for _x in fs/read_write.c fs/proc/base.c fs/proc/task_mmu.c; do
                 grep -q "^diff --git a/$_x " 50_filtered.patch && { echo "!!! 仍残留 $_x 段"; exit 1; }
               done
               # exec.c 的 include 原位替换(awk 脚本单独放文件, 内联 awk 在 mawk 下比较字符串会失效)
@@ -451,28 +480,43 @@ jobs:
               done
               [ "$_ibad" -eq 0 ] || { echo "!!! include 落点缺失, 中止(否则 fs/proc/base.o 必报 undeclared)"; exit 1; }
 
-              # ---- namespace.c 的两个全局 mnt 辅助函数 ----
-              # #56 链接期错误: undefined symbol: susfs_get_non_sus_mnt_id_from_mnt /
-              # susfs_get_non_sus_vfsmnt_from_vfsmnt, 被 fs/proc/fd.c:109 和 fs/statfs.c:153 引用。
-              # 这两个函数定义在 50 号 fs/namespace.c 段的文件末尾(init_fs_namespace_sysctls 之后),
-              # 而 namespace.c 整段被我们剥掉了(它的 include hunk 在这棵树上对不上), 调用方却留着。
-              # 所以单独把这两个函数补回 namespace.c 尾部, 而不是去救整个 namespace.c 段
-              # (那个段的 SUS_MOUNT/SUS_KSTAT 改动依赖大量对不上的上下文, 救了也是半成品)。
-              echo "=== builtin: namespace.c mnt 辅助函数补丁 ==="
-              [ -f susfs_mnt_helpers.patch ] || { echo "!!! 找不到 susfs_mnt_helpers.patch"; exit 1; }
-              patch -p1 --dry-run < susfs_mnt_helpers.patch || { echo "!!! susfs_mnt_helpers.patch dry-run FAILED"; exit 1; }
-              patch -p1 < susfs_mnt_helpers.patch || { echo "!!! susfs_mnt_helpers.patch 打不上"; exit 1; }
+              # ---- namespace.c：完整的 SUS_MOUNT 实现 ----
+              # 这一段的 10 个 hunk 里只有 include 那个对不上，其余 9 个在这棵树上干净可用：
+              #   - susfs_alloc_unshare_ksu_vfsmnt / susfs_alloc_non_unshare_ksu_vfsmnt (119 行)
+              #   - mnt_alloc_id/mnt_free_id 的 fake mnt_id 分配（DEFAULT_KSU_MNT_ID）
+              #   - clone_mnt / vfs_create_mount / copy_mnt_ns 的 KSU 分支
+              #   - 文件末尾的两个 susfs_get_non_sus_* 辅助函数
+              # 之前整段剥掉 -> SUS_MOUNT 只剩空壳：fake mnt_id 永远没人分配，
+              # fs/proc/fd.c 里 `mnt_id >= DEFAULT_KSU_MNT_ID` 恒假，隐藏挂载形同虚设。
+              # susfs_namespace_full.patch = 修正后的 include + CL_COPY_MNT_NS hunk + 原 9 个 hunk，
+              # 由 diff 生成（0 fuzz / 0 offset）。
+              echo "=== builtin: fs/namespace.c 完整 SUS_MOUNT 补丁 ==="
+              [ -f susfs_namespace_full.patch ] || { echo "!!! 找不到 susfs_namespace_full.patch"; exit 1; }
+              patch -p1 --dry-run < susfs_namespace_full.patch || { echo "!!! namespace 补丁 dry-run FAILED(有 fuzz/offset 也要查)"; exit 1; }
+              patch -p1 < susfs_namespace_full.patch || { echo "!!! namespace 补丁打不上"; exit 1; }
+              [ -f fs/namespace.c.rej ] && { echo "!!! 产生 .rej"; cat fs/namespace.c.rej | head -30; exit 1; }
               _mbad=0
-              for _sym in susfs_get_non_sus_mnt_id_from_mnt susfs_get_non_sus_vfsmnt_from_vfsmnt; do
-                _c=$(grep -cE "^[a-zA-Z_].*[ *]${_sym}\(" fs/namespace.c); _c=${_c:-0}
-                if [ "$_c" -eq 1 ]; then
-                  echo "  [OK]   fs/namespace.c 定义 $_sym"
+              # 逐项验证 SUS_MOUNT 的关键构件都在
+              # 注意用词边界匹配：CL_COPY_MNT_NS 是 CL_COPY_MNT_NS_FILE 的前缀，
+              # 直接 grep -F 会多算 3 次(2097/2124/2620 行是 NS_FILE)。
+              for _pair in \
+                "susfs_get_non_sus_mnt_id_from_mnt:1" \
+                "susfs_get_non_sus_vfsmnt_from_vfsmnt:1" \
+                "susfs_alloc_unshare_ksu_vfsmnt:2" \
+                "susfs_alloc_non_unshare_ksu_vfsmnt:4" \
+                "DEFAULT_KSU_MNT_ID:10" \
+                "VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT:3" \
+                "CL_COPY_MNT_NS:4" ; do
+                _s="${_pair%%:*}"; _want="${_pair##*:}"
+                _c=$(grep -cE "\b${_s}\b" fs/namespace.c); _c=${_c:-0}
+                if [ "$_c" -eq "$_want" ]; then
+                  echo "  [OK]   fs/namespace.c $_s x$_c"
                 else
-                  echo "  [FAIL] fs/namespace.c 定义 $_sym 出现 $_c 次 (期望 1)"; _mbad=$((_mbad+1))
+                  echo "  [FAIL] fs/namespace.c $_s 出现 $_c 次, 期望 $_want"; _mbad=$((_mbad+1))
                 fi
               done
-              [ "$_mbad" -eq 0 ] || { echo "!!! mnt 辅助函数缺失/重复, 链接必报 undefined symbol"; exit 1; }
-              # 调用方也必须还在(否则说明上面剥多了, 隐藏挂载会失效)
+              [ "$_mbad" -eq 0 ] || { echo "!!! SUS_MOUNT 构件不全, 隐藏挂载会残废"; exit 1; }
+              # 调用方也必须还在(否则说明剥多了, 隐藏挂载会失效)
               for _pair in "fs/proc/fd.c:susfs_get_non_sus_mnt_id_from_mnt" "fs/statfs.c:susfs_get_non_sus_vfsmnt_from_vfsmnt"; do
                 _f="${_pair%%:*}"; _s="${_pair##*:}"
                 _c=$(grep -cF "$_s" "$_f"); _c=${_c:-0}
@@ -824,11 +868,15 @@ jobs:
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
           if [ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]; then
             # builtin/kernel/Kconfig 里真实存在的 SUSFS 项（逐个核对过，见 Kconfig 原文）
+            # 注意 ENABLE_LOG 不在这个列表里 —— 隐藏性场景必须关掉，见下面那行。
             for c in KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT \
-           KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+           KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
            KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP; do
               echo "CONFIG_$c=y" >> ./common/arch/arm64/configs/gki_defconfig
             done
+            # susfs 的 pr_info 会把被隐藏的路径、mnt_id、操作类型直接打进 dmesg，
+            # 任何人能读 dmesg/kmsg 就能反推出装了什么。隐藏性优先，全关。
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=n" >> ./common/arch/arm64/configs/gki_defconfig
           else
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
