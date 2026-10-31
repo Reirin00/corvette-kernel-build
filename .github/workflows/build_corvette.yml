@@ -345,14 +345,19 @@ jobs:
           # ---- 隐藏性：LSM 注册名不能叫 "ksu" ----
           # ksu_lsm_hook_init() 里 security_add_hooks(..., "ksu") 会把这个名字写进
           # /sys/kernel/security/lsm，读出来就是 "capability,selinux,ksu" —— 等于挂牌。
-          # 本内核只编了 capability + selinux，没编 landlock，所以借它的名字最自然：
-          # 改完显示 "capability,selinux,landlock"，和一台正常 Android 设备无异。
+          #
+          # 替代名必须满足「本内核没编同名 LSM」，否则列表里会出现两个同名项，比 ksu 更显眼。
+          # 本内核实际编进去的只有 landlock / selinux / capability（用特征符号核实：
+          # landlock_add_rule / selinux_inode_alloc_security / cap_capable 在镜像里，
+          # yama/loadpin/safesetid/integrity/smack/tomoyo/apparmor/bpf 全部不在）。
+          # 所以不能用 landlock —— 它在。用 bpf：CONFIG_LSM 默认串里本来就有它排在最后，
+          # 现代 Android 6.1 内核带 bpf LSM 也很常见，出现它不会引起怀疑。
           # 注意：动的只是显示名，hook 行为完全不变；SELinux domain 的 "ksu"
           # （KERNEL_SU_DOMAIN，见 kernel/selinux/selinux.h）是 sepolicy 要用的，不能碰。
           if [ -f kernel/hook/lsm_hook.c ]; then
             if grep -q 'ARRAY_SIZE(ksu_hooks), "ksu"' kernel/hook/lsm_hook.c; then
-              sed -i 's/ARRAY_SIZE(ksu_hooks), "ksu"/ARRAY_SIZE(ksu_hooks), "landlock"/' kernel/hook/lsm_hook.c
-              echo "  [OK] LSM 注册名 ksu -> landlock"
+              sed -i 's/ARRAY_SIZE(ksu_hooks), "ksu"/ARRAY_SIZE(ksu_hooks), "bpf"/' kernel/hook/lsm_hook.c
+              echo "  [OK] LSM 注册名 ksu -> bpf"
             else
               echo "  !!! lsm_hook.c 找不到 ARRAY_SIZE(ksu_hooks), \"ksu\" —— 上游改了，请核对"
               grep -n "security_add_hooks" kernel/hook/lsm_hook.c || true
@@ -1219,7 +1224,10 @@ jobs:
                    KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
                    KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP
             echo "-- builtin：隐藏性要求必须关闭的项 --"
-            must_n KSU_SUSFS_ENABLE_LOG KSU_DEBUG
+            # BPF_LSM 必须没开：我们把 KSU 的 LSM 注册名改成了 "bpf" 做伪装，
+            # 如果本内核自己也编了 bpf LSM，lsm_append() 不查重，
+            # /sys/kernel/security/lsm 会变成 "...bpf,bpf"，比原来的 ksu 还显眼。
+            must_n KSU_SUSFS_ENABLE_LOG KSU_DEBUG BPF_LSM
             echo "-- builtin：确认 main 分支专属符号一个都没混进来 --"
             must_absent KSU_SUSFS_HAS_MAGIC_MOUNT KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
               KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT KSU_SUSFS_TRY_UMOUNT \
