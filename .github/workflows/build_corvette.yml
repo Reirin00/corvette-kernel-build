@@ -1195,6 +1195,20 @@ jobs:
               fi
             done
           }
+          # 隐藏性要求：某些项必须显式关闭（日志会把隐藏操作打进 dmesg）
+          # Kconfig 的 bool=n 在 .config 里写成 "# CONFIG_X is not set"，两种写法都要认
+          must_n() {
+            for sym in "$@"; do
+              if grep -qx "CONFIG_$sym=n" "$CFG" || grep -qx "# CONFIG_$sym is not set" "$CFG"; then
+                echo "  [OK]   CONFIG_$sym 已关闭"
+              elif grep -q "^CONFIG_$sym=y" "$CFG"; then
+                echo "  [FAIL] CONFIG_$sym 仍为 y —— 隐藏性要求必须关，dmesg 会露馅"
+                FAIL=$((FAIL+1))
+              else
+                echo "  [OK]   CONFIG_$sym 未出现（等同关闭）"
+              fi
+            done
+          }
 
           echo "-- 核心开关 --"
           must_y KSU
@@ -1202,8 +1216,10 @@ jobs:
           if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
             echo "-- builtin：SUSFS 组（builtin/kernel/Kconfig 真实存在的项）--"
             must_y KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT \
-                   KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                   KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
                    KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP
+            echo "-- builtin：隐藏性要求必须关闭的项 --"
+            must_n KSU_SUSFS_ENABLE_LOG KSU_DEBUG
             echo "-- builtin：确认 main 分支专属符号一个都没混进来 --"
             must_absent KSU_SUSFS_HAS_MAGIC_MOUNT KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
               KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT KSU_SUSFS_TRY_UMOUNT \
