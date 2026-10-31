@@ -424,22 +424,21 @@ jobs:
             # 用带 #ifndef 守卫的 anchor hunk 兜底插入，落点与 50 号等价且可重复应用。
             SUSFS50=50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
-              # namespace.c 不再整段剥：实测它的 10 个 hunk 里只有 include 那个对不上，
-              # 其余 9 个(含 119 行的 susfs_alloc_*_ksu_vfsmnt、fake mnt_id、CL_COPY_MNT_NS)
-              # 在这棵树上只有 offset、0 FAILED。整段剥掉 = SUS_MOUNT 残废，隐藏性大打折扣。
-              # 改为由 patches/susfs_namespace_full.patch 提供「修正版 include + 原 9 个 hunk」。
-              strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/proc/task_mmu.c"
+              # namespace.c 仍然整段剥掉（交给下面的 susfs_namespace_full.patch 全权负责）：
+              # 50 号那段如果照打，hunk#1(include) 必然 FAILED 并留下 .rej，
+              # 而它的 hunk#2~#10 又和我们自己的补丁完全重复 —— 必须二选一。
+              strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/namespace.c a/fs/proc/task_mmu.c"
               awk -v list="$strip_files" 'BEGIN{n=split(list,a," ");for(i=1;i<=n;i++)skip[a[i]]=1}
                 /^diff --git /{keep=!($3 in skip)} keep' "$SUSFS50" > 50_filtered.patch
               _tot=$(grep -c "^diff --git" "$SUSFS50")
               _kept=$(grep -c "^diff --git" 50_filtered.patch)
-              echo "==> 剥离 3 段(去 read_write + 2 个 include 冲突文件; namespace.c 单独重做): $_tot -> $_kept 个文件段"
-              if [ $(( _tot - _kept )) -ne 3 ]; then
-                echo "!!! 期望剥掉 3 段, 实际 $(( _tot - _kept )) 段 — 50 号上游内容变了, 请核对"
+              echo "==> 剥离 4 段(read_write + 3 个由自有补丁接管的文件): $_tot -> $_kept 个文件段"
+              if [ $(( _tot - _kept )) -ne 4 ]; then
+                echo "!!! 期望剥掉 4 段, 实际 $(( _tot - _kept )) 段 — 50 号上游内容变了, 请核对"
                 grep -n "^diff --git" "$SUSFS50" | head -40
                 exit 1
               fi
-              for _x in fs/read_write.c fs/proc/base.c fs/proc/task_mmu.c; do
+              for _x in fs/read_write.c fs/proc/base.c fs/namespace.c fs/proc/task_mmu.c; do
                 grep -q "^diff --git a/$_x " 50_filtered.patch && { echo "!!! 仍残留 $_x 段"; exit 1; }
               done
               # exec.c 的 include 原位替换(awk 脚本单独放文件, 内联 awk 在 mawk 下比较字符串会失效)
@@ -462,6 +461,25 @@ jobs:
               # base.c / namespace.c 由 guard 补丁统一处理(只插 susfs_def.h)
               echo "--- susfs_include_guard.patch"
               patch -p1 < susfs_include_guard.patch || { echo "!!! guard 补丁打不上"; exit 1; }
+
+              # ---- fs/namespace.c：完整的 SUS_MOUNT 实现（含它自己的 include）----
+              # 50 号那段的 10 个 hunk 里只有 include 那个对不上，其余 9 个在这棵树上
+              # 只有 offset、0 FAILED：
+              #   - susfs_alloc_unshare_ksu_vfsmnt / susfs_alloc_non_unshare_ksu_vfsmnt (119 行)
+              #   - mnt_alloc_id/mnt_free_id 的 fake mnt_id 分配（DEFAULT_KSU_MNT_ID）
+              #   - __lookup_mnt / vfs_create_mount / clone_mnt / copy_mnt_ns 的 KSU 分支
+              #   - 文件末尾两个 susfs_get_non_sus_* 辅助函数
+              # 所以本补丁 = 修正版 include + CL_COPY_MNT_NS + 原 9 个 hunk，
+              # 用 diff 生成，0 fuzz / 0 offset。必须放在 include 落点校验之前打，
+              # 因为 namespace.c 的 include 由它自己提供（guard 补丁已不再管这个文件）。
+              echo "=== builtin: fs/namespace.c 完整 SUS_MOUNT 补丁 ==="
+              [ -f susfs_namespace_full.patch ] || { echo "!!! 找不到 susfs_namespace_full.patch"; exit 1; }
+              patch -p1 --dry-run < susfs_namespace_full.patch || { echo "!!! namespace 补丁 dry-run FAILED(有 fuzz/offset 也要查)"; exit 1; }
+              patch -p1 < susfs_namespace_full.patch || { echo "!!! namespace 补丁打不上"; exit 1; }
+              if [ -f fs/namespace.c.rej ]; then
+                echo "!!! 产生 .rej"; head -30 fs/namespace.c.rej; exit 1
+              fi
+
               echo "=== builtin: include 落点校验(缺一个就是 undeclared) ==="
               # 注意: 不要校验 fs/proc/h/pid.h —— 这棵树没有 fs/proc/h/ 目录, 上游 50 号也不插,
               # 插了就是 'h/pid.h' file not found(#54 教训)。
@@ -480,21 +498,7 @@ jobs:
               done
               [ "$_ibad" -eq 0 ] || { echo "!!! include 落点缺失, 中止(否则 fs/proc/base.o 必报 undeclared)"; exit 1; }
 
-              # ---- namespace.c：完整的 SUS_MOUNT 实现 ----
-              # 这一段的 10 个 hunk 里只有 include 那个对不上，其余 9 个在这棵树上干净可用：
-              #   - susfs_alloc_unshare_ksu_vfsmnt / susfs_alloc_non_unshare_ksu_vfsmnt (119 行)
-              #   - mnt_alloc_id/mnt_free_id 的 fake mnt_id 分配（DEFAULT_KSU_MNT_ID）
-              #   - clone_mnt / vfs_create_mount / copy_mnt_ns 的 KSU 分支
-              #   - 文件末尾的两个 susfs_get_non_sus_* 辅助函数
-              # 之前整段剥掉 -> SUS_MOUNT 只剩空壳：fake mnt_id 永远没人分配，
-              # fs/proc/fd.c 里 `mnt_id >= DEFAULT_KSU_MNT_ID` 恒假，隐藏挂载形同虚设。
-              # susfs_namespace_full.patch = 修正后的 include + CL_COPY_MNT_NS hunk + 原 9 个 hunk，
-              # 由 diff 生成（0 fuzz / 0 offset）。
-              echo "=== builtin: fs/namespace.c 完整 SUS_MOUNT 补丁 ==="
-              [ -f susfs_namespace_full.patch ] || { echo "!!! 找不到 susfs_namespace_full.patch"; exit 1; }
-              patch -p1 --dry-run < susfs_namespace_full.patch || { echo "!!! namespace 补丁 dry-run FAILED(有 fuzz/offset 也要查)"; exit 1; }
-              patch -p1 < susfs_namespace_full.patch || { echo "!!! namespace 补丁打不上"; exit 1; }
-              [ -f fs/namespace.c.rej ] && { echo "!!! 产生 .rej"; cat fs/namespace.c.rej | head -30; exit 1; }
+              # ---- namespace.c 的 SUS_MOUNT 构件校验（补丁已在上面打过）----
               _mbad=0
               # 逐项验证 SUS_MOUNT 的关键构件都在
               # 注意用词边界匹配：CL_COPY_MNT_NS 是 CL_COPY_MNT_NS_FILE 的前缀，
