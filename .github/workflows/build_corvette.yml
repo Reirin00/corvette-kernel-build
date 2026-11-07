@@ -212,9 +212,14 @@ jobs:
           # （不启用任何 oplus_cpu 功能，只是让 Kconfig 能解析过去）。
           if [ ! -f common/kernel/oplus_cpu/sched/Kconfig ]; then
             echo "  [补] common/kernel/oplus_cpu/sched/Kconfig 缺失，建空占位"
-            mkdir -p common/kernel/oplus_cpu/sched
+            # 用 install -d（幂等，已存在也不报错）；mkdir -p 在这里被 set -e 连带
+            # 报过 "mkdir: Already exists"，换成 install 更稳。
+            install -d common/kernel/oplus_cpu/sched
             echo "# placeholder: OnePlusOSS 官方源缺此文件，留空以通过 kconfig 解析" \
               > common/kernel/oplus_cpu/sched/Kconfig
+            [ -f common/kernel/oplus_cpu/sched/Kconfig ] \
+              && echo "  [OK] 占位已写入" \
+              || { echo "  !! 占位写入失败"; exit 1; }
           else
             echo "  [OK] kernel/oplus_cpu/sched/Kconfig 已存在"
           fi
