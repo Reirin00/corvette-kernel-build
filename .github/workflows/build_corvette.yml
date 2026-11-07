@@ -406,13 +406,12 @@ jobs:
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
             # ---- 让 SukiSU 的编译单元能看到 susfs.h 的声明 ----
-            # setup.sh 会写 ccflags-y += -include .../drivers/kernelsu/include/kernel_compat.h
-            # 也就是说每个 KSU 源文件都会被强制先吃 kernel_compat.h ——
-            # 加在这里比改 kernel_includes.h 更稳（后者不保证被 pkg_observer.c 看到）。
-            # builtin 的 kernel/manager/pkg_observer.c 与 kernel/supercall/dispatch.c 会直接调
-            #   susfs_parse_priority_app_strings() / susfs_set_priority_uid_filter()
-            # 声明在 include/linux/susfs.h 的 CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 分支里。
-            KSU_COMPAT="KernelSU/kernel/include/kernel_compat.h"
+            # builtin 是单文件模式：obj-$(CONFIG_KSU) := ksu.o / ksu-y := ksu_main.o，
+            # 所有 .c 都靠 ksu_main.c 里的 #include 串起来。ksu_main.c 第 18 行是
+            #   #include "kernel_compat.h"
+            # 这个文件在 kernel/ 根目录（不是 kernel/include/，那里只有 arch.h/klog.h/ksu.h）。
+            # 加在这里能让 pkg_observer.c / supercall/dispatch.c 看到 susfs.h 的声明。
+            KSU_COMPAT="KernelSU/kernel/kernel_compat.h"
             if [ -f "$KSU_COMPAT" ]; then
               if ! grep -q "linux/susfs.h" "$KSU_COMPAT"; then
                 echo '#include <linux/susfs.h>' >> "$KSU_COMPAT"
@@ -421,7 +420,7 @@ jobs:
               tail -3 "$KSU_COMPAT"
             else
               echo "  !! 找不到 $KSU_COMPAT (cwd=$(pwd))"
-              ls -la KernelSU/kernel/include/ 2>/dev/null | head -8
+              ls -la KernelSU/kernel/kernel_compat.h 2>/dev/null || echo "    (kernel_compat.h 不在 kernel/ 根)"
               exit 1
             fi
             # ---- builtin 分支：用我们自己的 manual hook 补丁 ----
