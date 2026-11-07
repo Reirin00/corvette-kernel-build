@@ -210,36 +210,38 @@ jobs:
           done
 
           # ---- 批量修复悬空 symlink ----
-          # OnePlusOSS 官方 sm8650 树里 kernel/oplus_cpu、drivers/soc/oplus/oplus_resctrl
-          # 等都是指向 ../../vendor/oplus/... 的 symlink，而 zip/clone 里 vendor 目录不存在
-          # -> 这些 symlink 是悬空的 -> Kconfig 报 "can't open file ..."。
-          # 统一处理：把每个悬空 symlink 换成同名真目录 + 空的 Kconfig/占位，
-          # 让 kconfig 能解析过去（不启用对应功能，不影响编出的内核）。
+          # OnePlusOSS 官方 sm8650 树里大量路径是 symlink，指向 ../../vendor/oplus/...
+          # 而 vendor 目录在这棵树里不存在 -> 全是悬空的 -> Kconfig/编译期报错。
+          # 关键：必须按「链接名后缀」区分处理，不能一律建目录：
+          #   *.c / *.h 等源码文件 -> 建空文件（否则 Makefile 找 .o 会挂）
+          #   其余（目录）           -> 建目录 + 空 Kconfig
           echo "--- 扫描并修复悬空 symlink ---"
-          broken=$(find common -xtype l 2>/dev/null | head -50)
+          broken=$(find common -xtype l 2>/dev/null | head -80)
           if [ -n "$broken" ]; then
             echo "$broken" | while read -r lnk; do
               rel=${lnk#common/}
               echo "  [悬空] $rel -> $(readlink "$lnk" 2>/dev/null)"
             done
             echo "$broken" | while read -r lnk; do
-              # 若是 .../xxx/Kconfig 的父目录，换成真目录；否则也换成真目录（保守）
               rm -f "$lnk"
-              mkdir -p "$lnk"
-              if [ ! -f "$lnk/Kconfig" ]; then
-                printf '# placeholder: 该路径在官方源里是悬空 symlink，Kconfig 需要它存在\n' \
-                  > "$lnk/Kconfig"
-              fi
+              case "$lnk" in
+                *.c|*.h|*.S|*.dts|*.dtsi|*.conf|*.mk|*.xml|*.txt|*.md)
+                  mkdir -p "$(dirname "$lnk")"
+                  # 空源文件：加个注释避免被当成 0 字节异常
+                  printf '/* placeholder: 该符号在官方源里是悬空 symlink（目标 %s 不存在） */\n' \
+                    "vendor/oplus" > "$lnk"
+                  ;;
+                *)
+                  mkdir -p "$lnk"
+                  [ -f "$lnk/Kconfig" ] || \
+                    printf '# placeholder: 该目录在官方源里是悬空 symlink\n' > "$lnk/Kconfig"
+                  ;;
+              esac
             done
-            echo "  [OK] 已把 $(echo "$broken" | wc -l) 个悬空 symlink 换成占位目录"
+            echo "  [OK] 已处理 $(echo "$broken" | wc -l) 个悬空 symlink"
           else
             echo "  [OK] 没有悬空 symlink"
           fi
-          # 兜底：kernel/oplus_cpu 若因上面处理变成目录，确保 Kconfig 存在
-          [ -f common/kernel/oplus_cpu/sched/Kconfig ] || {
-            mkdir -p common/kernel/oplus_cpu/sched
-            printf '# placeholder\n' > common/kernel/oplus_cpu/sched/Kconfig
-          }
           echo "--- 修复后复查 ---"
           find common -xtype l 2>/dev/null | head -5 || true
 
