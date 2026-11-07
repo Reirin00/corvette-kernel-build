@@ -209,23 +209,39 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          # ---- 补 kernel/oplus_cpu/sched/Kconfig 占位 ----
-          # OnePlusOSS 的 sm8650 分支里 kernel/oplus_cpu 是指向
-          #   ../../../vendor/oplus/kernel/cpu
-          # 的 symlink，但那个目标目录在仓库里**也不存在**（Not Found）。
-          # 而 GitHub 的 archive zip 会把 symlink 解成一个普通文件，于是：
-          #   mkdir -p / install -d .../sched  -> Already exists  （#72 #73 #74）
-          # 干脆无条件清掉整个路径再建目录（它本来就只是个悬空软链，删了不会损失源码）。
-          echo "--- 处理 kernel/oplus_cpu ---"
-          ls -la common/kernel/oplus_cpu 2>/dev/null || echo "  (不存在)"
-          rm -rf common/kernel/oplus_cpu
-          install -d common/kernel/oplus_cpu/sched
-          printf '# placeholder: OnePlusOSS 官方源此路径是悬空 symlink，留空以通过 kconfig 解析\n' \
-            > common/kernel/oplus_cpu/sched/Kconfig
-          ls -la common/kernel/oplus_cpu/sched/
-          [ -f common/kernel/oplus_cpu/sched/Kconfig ] \
-            || { echo "  !! 占位写入失败"; exit 1; }
-          echo "  [OK] kernel/oplus_cpu/sched/Kconfig 就位"
+          # ---- 批量修复悬空 symlink ----
+          # OnePlusOSS 官方 sm8650 树里 kernel/oplus_cpu、drivers/soc/oplus/oplus_resctrl
+          # 等都是指向 ../../vendor/oplus/... 的 symlink，而 zip/clone 里 vendor 目录不存在
+          # -> 这些 symlink 是悬空的 -> Kconfig 报 "can't open file ..."。
+          # 统一处理：把每个悬空 symlink 换成同名真目录 + 空的 Kconfig/占位，
+          # 让 kconfig 能解析过去（不启用对应功能，不影响编出的内核）。
+          echo "--- 扫描并修复悬空 symlink ---"
+          broken=$(find common -xtype l 2>/dev/null | head -50)
+          if [ -n "$broken" ]; then
+            echo "$broken" | while read -r lnk; do
+              rel=${lnk#common/}
+              echo "  [悬空] $rel -> $(readlink "$lnk" 2>/dev/null)"
+            done
+            echo "$broken" | while read -r lnk; do
+              # 若是 .../xxx/Kconfig 的父目录，换成真目录；否则也换成真目录（保守）
+              rm -f "$lnk"
+              mkdir -p "$lnk"
+              if [ ! -f "$lnk/Kconfig" ]; then
+                printf '# placeholder: 该路径在官方源里是悬空 symlink，Kconfig 需要它存在\n' \
+                  > "$lnk/Kconfig"
+              fi
+            done
+            echo "  [OK] 已把 $(echo "$broken" | wc -l) 个悬空 symlink 换成占位目录"
+          else
+            echo "  [OK] 没有悬空 symlink"
+          fi
+          # 兜底：kernel/oplus_cpu 若因上面处理变成目录，确保 Kconfig 存在
+          [ -f common/kernel/oplus_cpu/sched/Kconfig ] || {
+            mkdir -p common/kernel/oplus_cpu/sched
+            printf '# placeholder\n' > common/kernel/oplus_cpu/sched/Kconfig
+          }
+          echo "--- 修复后复查 ---"
+          find common -xtype l 2>/dev/null | head -5 || true
 
       - name: 配置ccache目录
         id: ccacheconf
