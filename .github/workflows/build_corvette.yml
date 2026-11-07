@@ -390,7 +390,15 @@ jobs:
               git -C susfs4ksu checkout -q 27e0a0e42745991ba09d6f96a97bf4b83f41a012
               echo "  非 builtin：SUSFS pin 在 27e0a0e"
             else
-              echo "  builtin：SUSFS 用分支 HEAD（需要新 susfs_add_sus_type API）"
+              # builtin 也不能用分支 HEAD：HEAD(5f85e6e) 的 susfs.c 用了
+              # SUSFS_LOGI_RL("...") 但 susfs_def.h 里根本没定义这个宏 -> 编译期
+              # "call to undeclared function 'SUSFS_LOGI_RL'"（#63 实测，上游 bug）。
+              # c00a4d7 是「KernelSU: Sync with upstream」那一版：
+              #   有 susfs_add_sus_type / susfs_add_sus_avd_allowed_by_type /
+              #   susfs_parse_priority_app_strings / susfs_set_priority_uid_filter
+              #   且没有 SUSFS_LOGI_RL 问题。
+              git -C susfs4ksu checkout -q c00a4d7
+              echo "  builtin：SUSFS pin 在 c00a4d7（避开 HEAD 的 SUSFS_LOGI_RL bug）"
               git -C susfs4ksu log -1 --format='  SUSFS commit: %h %s'
             fi
             git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
