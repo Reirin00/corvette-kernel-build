@@ -203,26 +203,30 @@ jobs:
           done
 
           # ---- 补 kernel/oplus_cpu/sched/Kconfig 占位（官方 16 代源缺这个目录）----
-          # OnePlusOSS 的 sm8650 分支里 init/Kconfig:877 有
-          #   source "kernel/oplus_cpu/sched/Kconfig"
-          # 但仓库里没有 kernel/oplus_cpu/ 这个目录 -> kconfig 直接
-          #   init/Kconfig:877: can't open file "kernel/oplus_cpu/sched/Kconfig"
-          #   make[2]: *** [scripts/kconfig/Makefile:94: gki_defconfig] Error 1
-          # cctv18 的社区修复镜像补了这个目录，官方源没补。这里建空占位即可
-          # （不启用任何 oplus_cpu 功能，只是让 Kconfig 能解析过去）。
-          if [ ! -f common/kernel/oplus_cpu/sched/Kconfig ]; then
-            echo "  [补] common/kernel/oplus_cpu/sched/Kconfig 缺失，建空占位"
-            # 用 install -d（幂等，已存在也不报错）；mkdir -p 在这里被 set -e 连带
-            # 报过 "mkdir: Already exists"，换成 install 更稳。
+          # OnePlusOSS 的 sm8650 分支里 kernel/oplus_cpu 是个 **symlink**，
+          # 而 GitHub 的 archive zip 会把 symlink 解成一个普通文件（内容是链接目标路径），
+          # 于是 "mkdir/install -d common/kernel/oplus_cpu/sched" 会报
+          #   Already exists          （#72）
+          #   install: cannot create directory ...: Already exists   （#73）
+          # 正确做法：先把那个「伪文件」删掉，再建真目录并放占位 Kconfig。
+          if [ ! -d common/kernel/oplus_cpu ]; then
+            if [ -e common/kernel/oplus_cpu ]; then
+              echo "  [补] kernel/oplus_cpu 是 symlink 被 zip 解成的普通文件，删除之"
+              cat common/kernel/oplus_cpu 2>/dev/null | head -1 || true
+              rm -f common/kernel/oplus_cpu
+            fi
             install -d common/kernel/oplus_cpu/sched
-            echo "# placeholder: OnePlusOSS 官方源缺此文件，留空以通过 kconfig 解析" \
+            echo "# placeholder: OnePlusOSS 官方源缺此文件（symlink 在 zip 中丢失），留空以通过 kconfig 解析" \
               > common/kernel/oplus_cpu/sched/Kconfig
-            [ -f common/kernel/oplus_cpu/sched/Kconfig ] \
-              && echo "  [OK] 占位已写入" \
-              || { echo "  !! 占位写入失败"; exit 1; }
+            echo "  [OK] 已建 kernel/oplus_cpu/sched/Kconfig 占位"
           else
-            echo "  [OK] kernel/oplus_cpu/sched/Kconfig 已存在"
+            echo "  [OK] kernel/oplus_cpu 已是目录"
+            [ -f common/kernel/oplus_cpu/sched/Kconfig ] \
+              || { install -d common/kernel/oplus_cpu/sched
+                   echo "# placeholder" > common/kernel/oplus_cpu/sched/Kconfig; }
           fi
+          [ -f common/kernel/oplus_cpu/sched/Kconfig ] \
+            || { echo "  !! 占位仍缺失"; exit 1; }
 
       - name: 配置ccache目录
         id: ccacheconf
