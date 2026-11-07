@@ -411,7 +411,8 @@ jobs:
             #   susfs_parse_priority_app_strings() / susfs_set_priority_uid_filter()
             # 这两个函数由上面的 fs/susfs.c 提供、声明在 include/linux/susfs.h。
             # 不 include 就是 "call to undeclared function"（#64 实测，thyme 同款问题）。
-            KSU_INC="../KernelSU/kernel/kernel_includes.h"
+            # 本段 cwd = kernel_workspace（不是 common/），KernelSU 就在同级
+            KSU_INC="KernelSU/kernel/kernel_includes.h"
             if [ -f "$KSU_INC" ]; then
               if ! grep -q "linux/susfs.h" "$KSU_INC"; then
                 echo '#include <linux/susfs.h>' >> "$KSU_INC"
@@ -420,7 +421,7 @@ jobs:
               grep -n "susfs.h" "$KSU_INC" || echo "  !! 追加失败"
             else
               echo "  !! 找不到 $KSU_INC (cwd=$(pwd))"
-              ls -la ../KernelSU/kernel/ 2>/dev/null | head -5
+              ls -la KernelSU/kernel/ 2>/dev/null | head -5
               exit 1
             fi
             # ---- builtin 分支：用我们自己的 manual hook 补丁 ----
