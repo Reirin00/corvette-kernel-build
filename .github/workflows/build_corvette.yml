@@ -18,12 +18,13 @@ on:
           - 'cctv18'
           - 'OnePlusOSS'
       source_branch:
-        description: '源码分支(默认=cctv18修复版oneplus12通用141,用户实测可开机; OnePlusOSS的16代分支缺oplus_cpu会编译失败; 其余为corvette官方14.1/15源,均6.1.75)'
+        description: '源码分支(默认=cctv18修复版oneplus12通用141,用户实测可开机; ace_5=OnePlusOSS的Ace5 6.1.141; 其余为corvette官方14.1/15源,均6.1.75)'
         required: true
         type: choice
         default: 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
         options:
           - 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
+          - 'oneplus/sm8650_b_16.0.0_ace_5'
           - 'oneplus/sm8650_b_16.0.0_ace_3_pro'
           - 'oneplus/sm8650_v_15.0.0_ace_3_pro'
           - 'oneplus/sm8650_u_14.1.0_oneplus_ace3pro'
