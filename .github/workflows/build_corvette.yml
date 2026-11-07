@@ -168,13 +168,20 @@ jobs:
           [ -n "$SRC_REPO" ] || SRC_REPO="cctv18" &&
           SRC_BRANCH="${{ github.event.inputs.source_branch }}" &&
           [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12_6.1.141" &&
-          aria2c -s16 -x16 -k1M "https://github.com/${SRC_REPO}/android_kernel_common_oneplus_sm8650/archive/refs/heads/${SRC_BRANCH}.zip" -o common.zip &&
-          unzip -q common.zip &&
-          SHADIR=$(ls -d android_kernel_common_oneplus_sm8650-* 2>/dev/null | head -1) &&
-          [ -n "$SHADIR" ] &&
-          mv "$SHADIR" common &&
-          rm -rf common.zip &&
-          echo "源码目录 $SHADIR -> common" &&
+          # ⚠️ 不要用 archive/zip 下载：GitHub 的 zip 会把仓库里的 **symlink 解成普通文件**，
+          #    而 OnePlusOSS 官方 sm8650 树里大量使用 symlink（kernel/oplus_cpu、
+          #    drivers/soc/oplus/oplus_resctrl 等），zip 之后这些路径全变成内容为
+          #    目标字符串的普通文件 -> Kconfig 报 "can't open file ..."、
+          #    mkdir 报 "Already exists"。必须用 git clone 才能保留 symlink。
+          git clone --depth=1 --single-branch -b "$SRC_BRANCH" \
+            "https://github.com/${SRC_REPO}/android_kernel_common_oneplus_sm8650.git" common &&
+          echo "源码仓库 ${SRC_REPO}@${SRC_BRANCH} -> common" &&
+          echo "  symlink 抽查：" &&
+          for p in kernel/oplus_cpu drivers/soc/oplus/oplus_resctrl; do
+            if [ -L "common/$p" ]; then echo "    [OK] $p -> $(readlink "common/$p")"
+            elif [ -d "common/$p" ]; then echo "    [dir] $p"
+            else echo "    [缺] $p"; fi
+          done &&
           touch /tmp/ok_src &
           
           echo "正在克隆llvm-Clang20工具链..." &&
