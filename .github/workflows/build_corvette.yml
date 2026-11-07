@@ -406,42 +406,23 @@ jobs:
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
             # ---- 让 SukiSU 的编译单元能看到 susfs.h 的声明 ----
-            # SukiSU builtin 的 kernel/kernel_includes.h 里没有任何 susfs 头，
-            # 但 kernel/manager/pkg_observer.c 与 kernel/supercall/dispatch.c 会直接调
+            # setup.sh 会写 ccflags-y += -include .../drivers/kernelsu/include/kernel_compat.h
+            # 也就是说每个 KSU 源文件都会被强制先吃 kernel_compat.h ——
+            # 加在这里比改 kernel_includes.h 更稳（后者不保证被 pkg_observer.c 看到）。
+            # builtin 的 kernel/manager/pkg_observer.c 与 kernel/supercall/dispatch.c 会直接调
             #   susfs_parse_priority_app_strings() / susfs_set_priority_uid_filter()
-            # 这两个函数由上面的 fs/susfs.c 提供、声明在 include/linux/susfs.h。
-            # 不 include 就是 "call to undeclared function"（#64 实测，thyme 同款问题）。
-            # 本段 cwd = kernel_workspace（不是 common/），KernelSU 就在同级
-            KSU_INC="KernelSU/kernel/kernel_includes.h"
-            if [ -f "$KSU_INC" ]; then
-              if ! grep -q "linux/susfs.h" "$KSU_INC"; then
-                echo '#include <linux/susfs.h>' >> "$KSU_INC"
-                echo "  [OK] kernel_includes.h 已追加 susfs.h"
+            # 声明在 include/linux/susfs.h 的 CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 分支里。
+            KSU_COMPAT="KernelSU/kernel/include/kernel_compat.h"
+            if [ -f "$KSU_COMPAT" ]; then
+              if ! grep -q "linux/susfs.h" "$KSU_COMPAT"; then
+                echo '#include <linux/susfs.h>' >> "$KSU_COMPAT"
+                echo "  [OK] kernel_compat.h 已追加 susfs.h"
               fi
-              grep -n "susfs.h" "$KSU_INC" || echo "  !! 追加失败"
+              tail -3 "$KSU_COMPAT"
             else
-              echo "  !! 找不到 $KSU_INC (cwd=$(pwd))"
-              ls -la KernelSU/kernel/ 2>/dev/null | head -5
+              echo "  !! 找不到 $KSU_COMPAT (cwd=$(pwd))"
+              ls -la KernelSU/kernel/include/ 2>/dev/null | head -8
               exit 1
-            fi
-
-            # ---- 补 KSU_SUSFS_PRIORITY_UID_FILTER 这个 Kconfig 开关 ----
-            # susfs.h:244 把 susfs_set_priority_uid_filter / susfs_parse_priority_app_strings
-            # 的声明包在 #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 里，
-            # 而这个符号的 Kconfig 定义只在 10_enable_susfs_for_ksu.patch:151 ——
-            # builtin 模式不打 10 号补丁，所以符号不存在 -> 声明不可见 ->
-            # pkg_observer.c / dispatch.c 报 undeclared（#66 实测）。
-            KSU_KCFG="KernelSU/kernel/Kconfig"
-            if [ -f "$KSU_KCFG" ] && ! grep -q "KSU_SUSFS_PRIORITY_UID_FILTER" "$KSU_KCFG"; then
-              {
-                printf '\nconfig KSU_SUSFS_PRIORITY_UID_FILTER\n'
-                printf '\tbool "SUSFS: priority uid filter"\n'
-                printf '\tdepends on KSU_SUSFS\n'
-                printf '\tdefault y\n'
-                printf '\thelp\n'
-                printf '\t  Enable susfs priority uid filter.\n'
-              } >> "$KSU_KCFG"
-              echo "  [OK] Kconfig 已补 KSU_SUSFS_PRIORITY_UID_FILTER"
             fi
             # ---- builtin 分支：用我们自己的 manual hook 补丁 ----
             # SUSFS 模式下 hook 入口签名是 struct filename **，旧补丁传 const char __user **
@@ -893,6 +874,34 @@ jobs:
           grep -n "ccflags-y += -I" kernel/Makefile | head -20
           grep -q '^ccflags-y += -I\$(KSU_KERNEL_DIR)/include$' kernel/Makefile \
             || echo "  [提示] 未匹配到标准写法，Makefile 可能已变，人工复核"
+
+      - name: 补 KSU_SUSFS_PRIORITY_UID_FILTER 开关(仅 builtin)
+        run: |
+          # susfs.h:244 把这两个声明包在 #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 里：
+          #   void susfs_set_priority_uid_filter(void __user **);
+          #   void susfs_parse_priority_app_strings(void);
+          # 该符号的 Kconfig 定义只存在于 10_enable_susfs_for_ksu.patch:151，
+          # 而 builtin 模式不打这个补丁 -> 符号不存在 -> 声明不可见 ->
+          # pkg_observer.c / dispatch.c 报 undeclared function（#66 实测）。
+          cd kernel_workspace
+          KCFG="KernelSU/kernel/Kconfig"
+          if [ ! -f "$KCFG" ]; then
+            echo "!! 找不到 $KCFG (cwd=$(pwd))"; exit 1
+          fi
+          if grep -q "KSU_SUSFS_PRIORITY_UID_FILTER" "$KCFG"; then
+            echo "  已存在，跳过"
+          else
+            {
+              printf '\nconfig KSU_SUSFS_PRIORITY_UID_FILTER\n'
+              printf '\tbool "SUSFS: priority uid filter"\n'
+              printf '\tdepends on KSU_SUSFS\n'
+              printf '\tdefault y\n'
+              printf '\thelp\n'
+              printf '\t  Enable susfs priority uid filter.\n'
+            } >> "$KCFG"
+            echo "  [OK] 已补 KSU_SUSFS_PRIORITY_UID_FILTER"
+          fi
+          grep -n -A3 "config KSU_SUSFS_PRIORITY_UID_FILTER" "$KCFG"
 
       - name: 添加KSU & SUSFS 配置项
         run: |
