@@ -405,6 +405,24 @@ jobs:
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+            # ---- 让 SukiSU 的编译单元能看到 susfs.h 的声明 ----
+            # SukiSU builtin 的 kernel/kernel_includes.h 里没有任何 susfs 头，
+            # 但 kernel/manager/pkg_observer.c 与 kernel/supercall/dispatch.c 会直接调
+            #   susfs_parse_priority_app_strings() / susfs_set_priority_uid_filter()
+            # 这两个函数由上面的 fs/susfs.c 提供、声明在 include/linux/susfs.h。
+            # 不 include 就是 "call to undeclared function"（#64 实测，thyme 同款问题）。
+            KSU_INC="../KernelSU/kernel/kernel_includes.h"
+            if [ -f "$KSU_INC" ]; then
+              if ! grep -q "linux/susfs.h" "$KSU_INC"; then
+                echo '#include <linux/susfs.h>' >> "$KSU_INC"
+                echo "  [OK] kernel_includes.h 已追加 susfs.h"
+              fi
+              grep -n "susfs.h" "$KSU_INC" || echo "  !! 追加失败"
+            else
+              echo "  !! 找不到 $KSU_INC (cwd=$(pwd))"
+              ls -la ../KernelSU/kernel/ 2>/dev/null | head -5
+              exit 1
+            fi
             # ---- builtin 分支：用我们自己的 manual hook 补丁 ----
             # SUSFS 模式下 hook 入口签名是 struct filename **，旧补丁传 const char __user **
             # 会被当 struct filename ** 解引用 -> panic -> 15 秒重启。
