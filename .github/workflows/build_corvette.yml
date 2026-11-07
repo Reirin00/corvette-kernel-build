@@ -380,7 +380,19 @@ jobs:
             git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
             # 2026-10-27 上游 8b25990 改了 kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
             # 导致 selinux_hide.c hunk#13 打不上 → 编译失败；钉回 #37 成功时的 27e0a0e
-            git -C susfs4ksu checkout -q 27e0a0e42745991ba09d6f96a97bf4b83f41a012
+            # ⚠️ 2026-11-07：这个 pin 只对「非 builtin」路径有意义（那条路要打 10 号补丁）。
+            #   builtin 走自研的 manual_hooks_builtin_susfs.patch，不需要 10 号；
+            #   而 pin 的旧 susfs.c 里没有 susfs_add_sus_type /
+            #   susfs_add_sus_avd_allowed_by_type（gki-android14-6.1 最新 5f85e6e 才有），
+            #   但 SukiSU builtin 的代码会调用它们 → 链接期 undefined symbol（#62 实测）。
+            #   所以 builtin 模式不 pin，用分支 HEAD。
+            if [[ "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
+              git -C susfs4ksu checkout -q 27e0a0e42745991ba09d6f96a97bf4b83f41a012
+              echo "  非 builtin：SUSFS pin 在 27e0a0e"
+            else
+              echo "  builtin：SUSFS 用分支 HEAD（需要新 susfs_add_sus_type API）"
+              git -C susfs4ksu log -1 --format='  SUSFS commit: %h %s'
+            fi
             git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
