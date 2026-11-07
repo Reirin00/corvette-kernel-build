@@ -245,6 +245,27 @@ jobs:
           echo "--- 修复后复查 ---"
           find common -xtype l 2>/dev/null | head -5 || true
 
+          # ---- 按 Kconfig 里的 source 批量补齐缺失的 Kconfig ----
+          # 上一步只给悬空 symlink 的**自身路径**建了 Kconfig；
+          # 但像 init/Kconfig:877 里 source "kernel/oplus_cpu/sched/Kconfig"
+          # 需要的是**子路径**。这里把所有 source 出来的路径扫一遍，
+          # 缺哪个补哪个（空占位，不启用功能）。
+          echo "--- 扫描 Kconfig source 依赖 ---"
+          cd common
+          miss=0
+          for kc in $(grep -rhoE '^[[:space:]]*source[[:space:]]+"[^"]+"' --include=Kconfig . \
+                        | sed -E 's/.*source[[:space:]]+"//; s/"$//' | sort -u); do
+            case "$kc" in /*) continue;; esac   # 跳过绝对路径
+            if [ ! -f "$kc" ]; then
+              mkdir -p "$(dirname "$kc")"
+              printf '# placeholder: 官方源缺此 Kconfig（原为悬空 symlink），留空以通过解析\n' > "$kc"
+              echo "  [补] $kc"
+              miss=$((miss+1))
+            fi
+          done
+          echo "  [OK] 补了 $miss 个缺失的 Kconfig"
+          cd ..
+
       - name: 配置ccache目录
         id: ccacheconf
         run: |
