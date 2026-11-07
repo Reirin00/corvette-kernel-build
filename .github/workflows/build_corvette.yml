@@ -202,31 +202,23 @@ jobs:
             sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
           done
 
-          # ---- 补 kernel/oplus_cpu/sched/Kconfig 占位（官方 16 代源缺这个目录）----
-          # OnePlusOSS 的 sm8650 分支里 kernel/oplus_cpu 是个 **symlink**，
-          # 而 GitHub 的 archive zip 会把 symlink 解成一个普通文件（内容是链接目标路径），
-          # 于是 "mkdir/install -d common/kernel/oplus_cpu/sched" 会报
-          #   Already exists          （#72）
-          #   install: cannot create directory ...: Already exists   （#73）
-          # 正确做法：先把那个「伪文件」删掉，再建真目录并放占位 Kconfig。
-          if [ ! -d common/kernel/oplus_cpu ]; then
-            if [ -e common/kernel/oplus_cpu ]; then
-              echo "  [补] kernel/oplus_cpu 是 symlink 被 zip 解成的普通文件，删除之"
-              cat common/kernel/oplus_cpu 2>/dev/null | head -1 || true
-              rm -f common/kernel/oplus_cpu
-            fi
-            install -d common/kernel/oplus_cpu/sched
-            echo "# placeholder: OnePlusOSS 官方源缺此文件（symlink 在 zip 中丢失），留空以通过 kconfig 解析" \
-              > common/kernel/oplus_cpu/sched/Kconfig
-            echo "  [OK] 已建 kernel/oplus_cpu/sched/Kconfig 占位"
-          else
-            echo "  [OK] kernel/oplus_cpu 已是目录"
-            [ -f common/kernel/oplus_cpu/sched/Kconfig ] \
-              || { install -d common/kernel/oplus_cpu/sched
-                   echo "# placeholder" > common/kernel/oplus_cpu/sched/Kconfig; }
-          fi
+          # ---- 补 kernel/oplus_cpu/sched/Kconfig 占位 ----
+          # OnePlusOSS 的 sm8650 分支里 kernel/oplus_cpu 是指向
+          #   ../../../vendor/oplus/kernel/cpu
+          # 的 symlink，但那个目标目录在仓库里**也不存在**（Not Found）。
+          # 而 GitHub 的 archive zip 会把 symlink 解成一个普通文件，于是：
+          #   mkdir -p / install -d .../sched  -> Already exists  （#72 #73 #74）
+          # 干脆无条件清掉整个路径再建目录（它本来就只是个悬空软链，删了不会损失源码）。
+          echo "--- 处理 kernel/oplus_cpu ---"
+          ls -la common/kernel/oplus_cpu 2>/dev/null || echo "  (不存在)"
+          rm -rf common/kernel/oplus_cpu
+          install -d common/kernel/oplus_cpu/sched
+          printf '# placeholder: OnePlusOSS 官方源此路径是悬空 symlink，留空以通过 kconfig 解析\n' \
+            > common/kernel/oplus_cpu/sched/Kconfig
+          ls -la common/kernel/oplus_cpu/sched/
           [ -f common/kernel/oplus_cpu/sched/Kconfig ] \
-            || { echo "  !! 占位仍缺失"; exit 1; }
+            || { echo "  !! 占位写入失败"; exit 1; }
+          echo "  [OK] kernel/oplus_cpu/sched/Kconfig 就位"
 
       - name: 配置ccache目录
         id: ccacheconf
