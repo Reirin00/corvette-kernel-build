@@ -128,6 +128,14 @@ on:
         required: false
         type: string
         default: 'Reirin'
+      enable_ksu:
+        description: '是否编入 KernelSU+SUSFS(false=纯内核，用于排查"能不能开机"；刷机验证基线时先关掉)'
+        required: true
+        type: choice
+        default: 'true'
+        options:
+          - 'true'
+          - 'false'
 
 jobs:
   build:
@@ -320,7 +328,30 @@ jobs:
             ccache -sv
           fi
 
+      - name: 纯内核模式准备(enable_ksu=false)
+        if: ${{ github.event.inputs.enable_ksu == 'false' }}
+        run: |
+          # enable_ksu=false 时上面 6 个 KSU step 全被跳过，drivers/kernelsu 不存在，
+          # 但 drivers/Kconfig 里可能 source "drivers/kernelsu/Kconfig" -> kconfig 会报错。
+          # 这里建空占位，让 kconfig 能解析过去（CONFIG_KSU 不开，不会编进任何代码）。
+          cd kernel_workspace/common
+          echo "--- 纯内核模式：清理 KSU 痕迹 ---"
+          for kc in $(grep -rhoE '^[[:space:]]*source[[:space:]]+"[^"]*kernelsu[^"]*"' --include=Kconfig . 2>/dev/null \
+                      | sed -E 's/.*source[[:space:]]+"//; s/"$//' | sort -u); do
+            case "$kc" in /*) continue;; esac
+            if [ ! -f "$kc" ]; then
+              mkdir -p "$(dirname "$kc")"
+              printf '# placeholder: 纯内核模式，KernelSU 未编入\n' > "$kc"
+              echo "  [补] $kc"
+            fi
+          done
+          [ -d drivers/kernelsu ] || mkdir -p drivers/kernelsu
+          [ -f drivers/kernelsu/Kconfig ] || printf '# placeholder: 纯内核模式\n' > drivers/kernelsu/Kconfig
+          [ -f drivers/kernelsu/Makefile ] || printf '# placeholder: 纯内核模式\n' > drivers/kernelsu/Makefile
+          echo "  [OK] 纯内核模式准备完成"
+
       - name: 添加KernelSU
+        if: ${{ github.event.inputs.enable_ksu != 'false' }}
         id: ksu_version
         run: |
           # 进入内核工作目录
@@ -438,6 +469,7 @@ jobs:
           fi
 
       - name: 应用 KernelSU & SUSFS 补丁
+        if: ${{ github.event.inputs.enable_ksu != 'false' }}
         run: |
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
@@ -791,6 +823,7 @@ jobs:
           fi
           
       - name: SUSFS 符号/include 兜底(宏值源自社区完整版 susfs_def.h 与 KernelSU-Next)
+        if: ${{ github.event.inputs.enable_ksu != 'false' }}
         run: |
           cd kernel_workspace/common
           echo '' >> ./include/linux/susfs_def.h
@@ -904,6 +937,7 @@ jobs:
           fi
           
       - name: 修正 KSU 头文件搜索顺序(仅 builtin)
+        if: ${{ github.event.inputs.enable_ksu != 'false' }}
         run: |
           # 背景：builtin/kernel/Makefile 里写了
           #   ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
@@ -940,6 +974,7 @@ jobs:
             || echo "  [提示] 未匹配到标准写法，Makefile 可能已变，人工复核"
 
       - name: 补 KSU_SUSFS_PRIORITY_UID_FILTER 开关(仅 builtin)
+        if: ${{ github.event.inputs.enable_ksu != 'false' }}
         run: |
           # susfs.h:244 把这两个声明包在 #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER 里：
           #   void susfs_set_priority_uid_filter(void __user **);
@@ -968,6 +1003,7 @@ jobs:
           grep -n -A3 "config KSU_SUSFS_PRIORITY_UID_FILTER" "$KCFG"
 
       - name: 添加KSU & SUSFS 配置项
+        if: ${{ github.event.inputs.enable_ksu != 'false' }}
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
