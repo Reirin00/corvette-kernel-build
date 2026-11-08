@@ -1323,6 +1323,13 @@ jobs:
           }
 
           echo "-- 核心开关 --"
+          if [[ "${{ github.event.inputs.enable_ksu }}" == "false" ]]; then
+            echo "  [SKIP] 纯内核模式：跳过所有 KSU/SUSFS CONFIG 校验"
+            grep -E "^CONFIG_(CC_IS_CLANG|CLANG_VERSION)" "$CFG" | head -2 || true
+            echo "============================================================="
+            echo "config 校验：纯内核模式，跳过 KSU 项"
+            exit 0
+          fi
           must_y KSU
 
           if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
