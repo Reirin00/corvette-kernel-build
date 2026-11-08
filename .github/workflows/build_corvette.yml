@@ -818,7 +818,7 @@ jobs:
             patch -p1 -N -F 3 < 69_hide_stuff.patch || true
             #为KernelSU Next添加WildKSU管理器支持
             cd ./drivers/kernelsu
-            wget https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/next/susfs_fix_patches/v1.5.12/fix_apk_sign.c.patch
+            timeout 120 wget -q --tries=2 --timeout=30 https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/next/susfs_fix_patches/v1.5.12/fix_apk_sign.c.patch || echo "  [warn] wget 失败/超时: https://github.com/WildKernels/kernel_patches/raw/refs/heads"
             patch -p2 -N -F 3 < fix_apk_sign.c.patch || true
           fi
           
@@ -1131,8 +1131,16 @@ jobs:
             echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
             #由于部分机型的vintf兼容性检测规则，在开启CONFIG_IP6_NF_NAT后开机会出现"您的设备内部出现了问题。请联系您的设备制造商了解详情。"的提示，故添加一个配置修复补丁，在编译内核时隐藏CONFIG_IP6_NF_NAT=y但不影响对应功能编译
             cd common
-            wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/config.patch
-            patch -p1 -F 3 < config.patch || true
+            # ⚠️ wget 必须带超时：GitHub raw 卡住时会永久阻塞（#81 卡了 18 分钟）
+            #    这个补丁只用于隐藏 CONFIG_IP6_NF_NAT 的 vintf 提示，拿不到就跳过，
+            #    不影响内核编译。
+            if timeout 60 wget -q --tries=2 --timeout=20                  -O config.patch                  https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/config.patch; then
+              echo "  [OK] config.patch 已下载 ($(stat -c%s config.patch) B)"
+              patch -p1 -F 3 < config.patch || echo "  [warn] config.patch 打不上，跳过"
+            else
+              echo "  [warn] config.patch 下载失败/超时，跳过（不影响编译）"
+            fi
+            rm -f config.patch
           fi
 
       - name: 添加 BBR 等一系列拥塞控制算法
@@ -1199,7 +1207,7 @@ jobs:
             cd kernel_workspace
             echo "CONFIG_BBG=y" >> ./common/arch/arm64/configs/gki_defconfig
             cd ./common/security
-            wget https://github.com/cctv18/Baseband-guard/archive/refs/heads/master.zip
+            timeout 120 wget -q --tries=2 --timeout=30 https://github.com/cctv18/Baseband-guard/archive/refs/heads/master.zip || echo "  [warn] wget 失败/超时: https://github.com/cctv18/Baseband-guard/archive/refs/heads/"
             unzip -q master.zip
             mv "Baseband-guard-master" baseband-guard
             printf '\nobj-$(CONFIG_BBG) += baseband-guard/\n' >> ./Makefile
@@ -1289,8 +1297,8 @@ jobs:
           echo "sloppiness = time_macros,include_file_ctime,include_file_mtime,file_stat_matches,file_macro,time_macros,pch_defines" >> "$CCACHE_DIR/ccache.conf"
           
           cd kernel_workspace/common
-          wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/lib/libfakestat.so
-          wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/lib/libfaketimeMT.so
+          timeout 120 wget -q --tries=2 --timeout=30 https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/lib/libfakestat.so || echo "  [warn] wget 失败/超时: https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/"
+          timeout 120 wget -q --tries=2 --timeout=30 https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/lib/libfaketimeMT.so || echo "  [warn] wget 失败/超时: https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/"
           chmod 777 ./*.so
           export FAKESTAT="2025-05-25 12:00:00"
           export FAKETIME="@2025-05-25 13:00:00"
@@ -1458,7 +1466,7 @@ jobs:
             KSU_TYPENAME="KSUNext"
           fi
           if [[ "${{ github.event.inputs.lz4_enable }}" == "2" || "${{ github.event.inputs.lz4_enable }}" == "3" ]]; then
-            wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8650/refs/heads/main/zram.zip
+            timeout 120 wget -q --tries=2 --timeout=30 https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8650/refs/heads/main/zram.zip || echo "  [warn] wget 失败/超时: https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_s"
           fi
           ZIPNAME="AnyKernel3_corvette_${{ env.CCACHE_TAG }}_${{ env.KSUPART }}"
           [ -n "${{ github.event.inputs.kernel_suffix }}" ] && ZIPNAME="${ZIPNAME}_${{ github.event.inputs.kernel_suffix }}"
