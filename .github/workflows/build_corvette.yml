@@ -475,24 +475,13 @@ jobs:
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             echo "正在添加SukiSU Ultra补丁..."
             git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
-            # 2026-10-27 上游 8b25990 改了 kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch
-            # 导致 selinux_hide.c hunk#13 打不上 → 编译失败；钉回 #37 成功时的 27e0a0e
-            # ⚠️ 2026-11-07：这个 pin 只对「非 builtin」路径有意义（那条路要打 10 号补丁）。
-            #   builtin 走自研的 manual_hooks_builtin_susfs.patch，不需要 10 号；
             #   而 pin 的旧 susfs.c 里没有 susfs_add_sus_type /
-            #   susfs_add_sus_avd_allowed_by_type（gki-android14-6.1 最新 5f85e6e 才有），
-            #   但 SukiSU builtin 的代码会调用它们 → 链接期 undefined symbol（#62 实测）。
             #   所以 builtin 模式不 pin，用分支 HEAD。
             if [[ "${{ github.event.inputs.ksu_ref }}" != "builtin" ]]; then
               git -C susfs4ksu checkout -q 27e0a0e42745991ba09d6f96a97bf4b83f41a012
               echo "  非 builtin：SUSFS pin 在 27e0a0e"
             else
-              # builtin 也不能用分支 HEAD：HEAD(5f85e6e) 的 susfs.c 用了
-              # SUSFS_LOGI_RL("...") 但 susfs_def.h 里根本没定义这个宏 -> 编译期
-              # "call to undeclared function 'SUSFS_LOGI_RL'"（#63 实测，上游 bug）。
               # c00a4d7 是「KernelSU: Sync with upstream」那一版：
-              #   有 susfs_add_sus_type / susfs_add_sus_avd_allowed_by_type /
-              #   susfs_parse_priority_app_strings / susfs_set_priority_uid_filter
               #   且没有 SUSFS_LOGI_RL 问题。
               git -C susfs4ksu checkout -q c00a4d7
               echo "  builtin：SUSFS pin 在 c00a4d7（避开 HEAD 的 SUSFS_LOGI_RL bug）"
@@ -502,12 +491,7 @@ jobs:
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-            # ---- 让 SukiSU 的编译单元能看到 susfs.h 的声明 ----
-            # builtin 是单文件模式：obj-$(CONFIG_KSU) := ksu.o / ksu-y := ksu_main.o，
-            # 所有 .c 都靠 ksu_main.c 里的 #include 串起来。ksu_main.c 第 18 行是
             #   #include "kernel_compat.h"
-            # 这个文件在 kernel/ 根目录（不是 kernel/include/，那里只有 arch.h/klog.h/ksu.h）。
-            # 加在这里能让 pkg_observer.c / supercall/dispatch.c 看到 susfs.h 的声明。
             KSU_COMPAT="KernelSU/kernel/kernel_compat.h"
             if [ -f "$KSU_COMPAT" ]; then
               if ! grep -q "linux/susfs.h" "$KSU_COMPAT"; then
@@ -520,18 +504,11 @@ jobs:
               ls -la KernelSU/kernel/kernel_compat.h 2>/dev/null || echo "    (kernel_compat.h 不在 kernel/ 根)"
               exit 1
             fi
-            # ---- builtin 分支：用我们自己的 manual hook 补丁 ----
-            # SUSFS 模式下 hook 入口签名是 struct filename **，旧补丁传 const char __user **
-            # 会被当 struct filename ** 解引用 -> panic -> 15 秒重启。
-            # 我们的补丁插在已持有 struct filename* 的位置（do_execveat / vfs_fstatat）。
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
               BH_PATCH="${{ github.workspace }}/selfrepo/patches/manual_hooks_builtin_susfs.patch"
               [ -f "$BH_PATCH" ] || { echo "!!! 找不到 $BH_PATCH"; ls -la "${{ github.workspace }}" || true; exit 1; }
               cp "$BH_PATCH" ./common/
               echo "==> builtin 分支：使用 patches/manual_hooks_builtin_susfs.patch"
-              # 50 号里三处 include hunk 在这棵 oneplus 树上上下文对不上(base.c / namespace.c 的
-              # include 区没有空行, 也没有 trace/hooks/blk.h), patch 返回 FAILED 但被 `|| echo` 吞掉,
-              # 结果 susfs_def.h 没被 include -> 编译期 SUSFS_IS_INODE_* undeclared。见 #52。
               for _p in susfs_include_guard.patch susfs_include_task_mmu.patch susfs_namespace_full.patch; do
                 _f="${{ github.workspace }}/selfrepo/patches/$_p"
                 [ -f "$_f" ] || { echo "!!! 找不到 $_f"; ls -la "${{ github.workspace }}/selfrepo/patches" || true; exit 1; }
@@ -549,24 +526,10 @@ jobs:
               cp ./SukiSU_patch/69_hide_stuff.patch ./common/
             fi
             cd ./common
-            # ---- builtin 分支：剥掉 50 号的 fs/read_write.c 段 ----
-            # 50 号这段用的是 main 分支签名 void ksu_handle_sys_read(unsigned int fd)，
-            # 而 builtin 的真实定义是 int ksu_handle_sys_read(unsigned int, char __user **, size_t *)，
-            # 两者冲突 -> conflicting types；且先插入会让本补丁 hunk 匹配失败。
             #
-            # 另外只剥 fs/exec.c 的 include hunk —— 它的 hunk#2~#4 是全补丁里唯一必须成功的
-            # su 路径 hook，剥整段会把 hook 一起丢掉(#53 就是这么炸的)。exec.c 改由
-            # awk 原位替换那 6 行 include，保留其后所有 hunk。
             #
-            # base.c / namespace.c / task_mmu.c 的 include hunk 在新树上必然 FAILED(旧树有该行/空行,
-            # 这棵树没有)，失败的 hunk 会被 patch 丢掉、后面的 hunk 照打 -> 编译期 undeclared。
-            # 这三个文件整段剥掉，改由 susfs_include_guard.patch / susfs_include_task_mmu.patch
-            # 用带 #ifndef 守卫的 anchor hunk 兜底插入，落点与 50 号等价且可重复应用。
             SUSFS50=50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
-              # namespace.c 仍然整段剥掉（交给下面的 susfs_namespace_full.patch 全权负责）：
-              # 50 号那段如果照打，hunk#1(include) 必然 FAILED 并留下 .rej，
-              # 而它的 hunk#2~#10 又和我们自己的补丁完全重复 —— 必须二选一。
               strip_files="a/fs/read_write.c a/fs/proc/base.c a/fs/namespace.c a/fs/proc/task_mmu.c"
               awk -v list="$strip_files" 'BEGIN{n=split(list,a," ");for(i=1;i<=n;i++)skip[a[i]]=1}
                 /^diff --git /{keep=!($3 in skip)} keep' "$SUSFS50" > 50_filtered.patch
@@ -581,7 +544,6 @@ jobs:
               for _x in fs/read_write.c fs/proc/base.c fs/namespace.c fs/proc/task_mmu.c; do
                 grep -q "^diff --git a/$_x " 50_filtered.patch && { echo "!!! 仍残留 $_x 段"; exit 1; }
               done
-              # exec.c 的 include 原位替换(awk 脚本单独放文件, 内联 awk 在 mawk 下比较字符串会失效)
               EXECFIX="${{ github.workspace }}/selfrepo/patches/exec_include_guard.awk"
               [ -f "$EXECFIX" ] || { echo "!!! 找不到 $EXECFIX"; exit 1; }
               awk -f "$EXECFIX" 50_filtered.patch > 50_execfix.patch || { echo "!!! exec include 改写失败"; exit 1; }
@@ -592,26 +554,16 @@ jobs:
               fi
               mv 50_execfix.patch 50_filtered.patch
               patch -p1 < 50_filtered.patch || echo "(50 号部分 hunk 未打上, 见上方; 非 hook 相关失败不影响)"
-              # 兜底 include 补丁（失败必须中止, 这里的静默失败就是 #52 的根因）
               echo "=== builtin: SUSFS include 兜底补丁 ==="
               for _p in susfs_include_task_mmu.patch; do
                 echo "--- $_p"
                 patch -p1 < "$_p" || { echo "!!! $_p 打不上, include 会缺, 编译必炸"; exit 1; }
               done
-              # base.c / namespace.c 由 guard 补丁统一处理(只插 susfs_def.h)
               echo "--- susfs_include_guard.patch"
               patch -p1 < susfs_include_guard.patch || { echo "!!! guard 补丁打不上"; exit 1; }
 
-              # ---- fs/namespace.c：完整的 SUS_MOUNT 实现（含它自己的 include）----
-              # 50 号那段的 10 个 hunk 里只有 include 那个对不上，其余 9 个在这棵树上
               # 只有 offset、0 FAILED：
-              #   - susfs_alloc_unshare_ksu_vfsmnt / susfs_alloc_non_unshare_ksu_vfsmnt (119 行)
-              #   - mnt_alloc_id/mnt_free_id 的 fake mnt_id 分配（DEFAULT_KSU_MNT_ID）
-              #   - __lookup_mnt / vfs_create_mount / clone_mnt / copy_mnt_ns 的 KSU 分支
               #   - 文件末尾两个 susfs_get_non_sus_* 辅助函数
-              # 所以本补丁 = 修正版 include + CL_COPY_MNT_NS + 原 9 个 hunk，
-              # 用 diff 生成，0 fuzz / 0 offset。必须放在 include 落点校验之前打，
-              # 因为 namespace.c 的 include 由它自己提供（guard 补丁已不再管这个文件）。
               echo "=== builtin: fs/namespace.c 完整 SUS_MOUNT 补丁 ==="
               [ -f susfs_namespace_full.patch ] || { echo "!!! 找不到 susfs_namespace_full.patch"; exit 1; }
               patch -p1 --dry-run < susfs_namespace_full.patch || { echo "!!! namespace 补丁 dry-run FAILED(有 fuzz/offset 也要查)"; exit 1; }
@@ -621,7 +573,6 @@ jobs:
               fi
 
               echo "=== builtin: include 落点校验(缺一个就是 undeclared) ==="
-              # 注意: 不要校验 fs/proc/h/pid.h —— 这棵树没有 fs/proc/h/ 目录, 上游 50 号也不插,
               # 插了就是 'h/pid.h' file not found(#54 教训)。
               _ibad=0
               for _pair in \
@@ -638,11 +589,8 @@ jobs:
               done
               [ "$_ibad" -eq 0 ] || { echo "!!! include 落点缺失, 中止(否则 fs/proc/base.o 必报 undeclared)"; exit 1; }
 
-              # ---- namespace.c 的 SUS_MOUNT 构件校验（补丁已在上面打过）----
               _mbad=0
               # 逐项验证 SUS_MOUNT 的关键构件都在
-              # 注意用词边界匹配：CL_COPY_MNT_NS 是 CL_COPY_MNT_NS_FILE 的前缀，
-              # 直接 grep -F 会多算 3 次(2097/2124/2620 行是 NS_FILE)。
               for _pair in \
                 "susfs_get_non_sus_mnt_id_from_mnt:1" \
                 "susfs_get_non_sus_vfsmnt_from_vfsmnt:1" \
@@ -660,7 +608,6 @@ jobs:
                 fi
               done
               [ "$_mbad" -eq 0 ] || { echo "!!! SUS_MOUNT 构件不全, 隐藏挂载会残废"; exit 1; }
-              # 调用方也必须还在(否则说明剥多了, 隐藏挂载会失效)
               for _pair in "fs/proc/fd.c:susfs_get_non_sus_mnt_id_from_mnt" "fs/statfs.c:susfs_get_non_sus_vfsmnt_from_vfsmnt"; do
                 _f="${_pair%%:*}"; _s="${_pair##*:}"
                 _c=$(grep -cF "$_s" "$_f"); _c=${_c:-0}
@@ -670,12 +617,10 @@ jobs:
             else
               patch -p1 < "$SUSFS50" || true
             fi
-            # ---- builtin 分支：打我们自己的补丁并校验 ----
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
               echo "=== builtin manual hook 补丁 dry-run 预检 ==="
               patch -p1 --dry-run < manual_hooks_builtin_susfs.patch || { echo "!!! dry-run 有 FAILED hunk"; exit 1; }
               patch -p1 < manual_hooks_builtin_susfs.patch || { echo "!!! 补丁应用失败"; exit 1; }
-              # 只校验 fs/read_write.c（本补丁唯一负责的文件）；其余 5 个入口由 50 号补丁提供。
               echo "=== builtin: fs/read_write.c hook 校验 ==="
               if ! grep -qF "ksu_handle_sys_read(fd, &buf, &count)" fs/read_write.c; then
                 echo "  [FAIL] fs/read_write.c 缺少 ksu_handle_sys_read(fd, &buf, &count)"; exit 1
@@ -683,18 +628,14 @@ jobs:
               _n=$(grep -cF "ksu_handle_sys_read(fd" fs/read_write.c)
               echo "  [OK] fs/read_write.c <- ksu_handle_sys_read  ($_n 处)"
               [ "$_n" -eq 1 ] || { echo "!!! ksu_handle_sys_read 出现 $_n 次, 期望 1 次(重复调用)"; exit 1; }
-              # 签名必须与 builtin 的 int(fd, char __user **, size_t *) 一致
               if ! grep -qF "extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);" fs/read_write.c; then
                 echo "  [FAIL] ksu_handle_sys_read 声明签名不是 builtin 版"; exit 1
               fi
               echo "  [OK] 声明签名 = int(fd, char __user **, size_t *)"
-              # 门控必须是 static key: ksu_vfs_read_hook 在 SUSFS 下恒为 true 关不掉
               if ! grep -qF "static_branch_likely(&ksu_is_init_rc_hook_enabled)" fs/read_write.c; then
                 echo "  [FAIL] read hook 门控不是 ksu_is_init_rc_hook_enabled (SUSFS 下 ksu_vfs_read_hook 恒 true)"; exit 1
               fi
               echo "  [OK] 门控 = static_branch_likely(&ksu_is_init_rc_hook_enabled)"
-              # 不允许在代码里用 KSU_COMPAT_USE_STATIC_KEY: fs/read_write.c 看不到该宏。
-              # 注意只查非注释行 —— 补丁的说明注释里会提到这个宏名, 不能误判。
               if grep -vE '^[[:space:]]*(/\*|\*|//)' fs/read_write.c | grep -qF "KSU_COMPAT_USE_STATIC_KEY"; then
                 echo "  [FAIL] fs/read_write.c 代码里用了 KSU_COMPAT_USE_STATIC_KEY (该宏仅 kernel_compat.h 内可见)"
                 grep -nE "KSU_COMPAT_USE_STATIC_KEY" fs/read_write.c | grep -vE '^[0-9]+:[[:space:]]*(/\*|\*|//)' || true
@@ -756,22 +697,12 @@ jobs:
             if [[ ${{ github.event.inputs.hook_method }} != "lsm" ]]; then
               patch -p1 < 69_hide_stuff.patch || true
             fi
-            # 复活老式 SUSFS: 新版 KSU Kconfig 已删 KSU_SUSFS 符号组, 注入官方激活补丁
             #
             # !!! builtin 分支必须跳过 10_enable !!!
-            # 10_enable 是给「main 分支」写的：它的 kernel/Kbuild hunk 会把
-            # drivers/kernelsu/Kbuild 换成 main 分支的 hook obj 列表
-            # (hook/syscall_hook_manager.o / hook/arm64/syscall_hook.o ...)，
-            # 而 builtin 分支根本没有 hook/arm64 目录 -> 编译直接炸。
-            # 另外它还会往 core/init.c 里塞 ksu_syscall_table_* 之类只在 main 分支
-            # 才有的符号。builtin 分支本身 SUSFS 支持是原生的（Kconfig 里就有
-            # KSU_SUSFS 整组，sucompat.h 里也有 #ifdef CONFIG_KSU_SUSFS 分支），
             # 完全不需要 10_enable。
             if [[ "${{ github.event.inputs.ksu_ref }}" == "builtin" ]]; then
               echo "==> builtin 分支：跳过 10_enable_susfs_for_ksu.patch（该补丁只适用于 main 分支）"
               echo "    依据：builtin/kernel/Kconfig 已原生包含 KSU_SUSFS 整组配置项"
-              # 注意: 本段当前工作目录是 common/, KernelSU 在 kernel_workspace/KernelSU,
-              # 所以必须用 ../KernelSU 或 drivers/kernelsu (setup.sh 建的软链)。
               KSU_KCONFIG=""
               for _c in drivers/kernelsu/kernel/Kconfig ../KernelSU/kernel/Kconfig; do
                 [ -f "$_c" ] && { KSU_KCONFIG="$_c"; break; }
