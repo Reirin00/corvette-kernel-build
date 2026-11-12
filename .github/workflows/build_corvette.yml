@@ -13,7 +13,7 @@ on:
         description: '源码仓库(默认cctv18=社区修复镜像,官方16代源缺kernel/oplus_cpu编不过; OnePlusOSS=官方原始源)'
         required: true
         type: choice
-        default: 'cctv18'
+        default: 'OnePlusOSS'
         options:
           - 'cctv18'
           - 'OnePlusOSS'
@@ -21,7 +21,7 @@ on:
         description: '源码分支(默认=cctv18修复版oneplus12通用141,用户实测可开机; ace_5=OnePlusOSS的Ace5 6.1.141; 其余为corvette官方14.1/15源,均6.1.75)'
         required: true
         type: choice
-        default: 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
+        default: 'oneplus/sm8650_b_16.0.0_ace_5'
         options:
           - 'oneplus/sm8650_b_16.0.0_oneplus12_6.1.141'
           - 'oneplus/sm8650_b_16.0.0_ace_5'
@@ -173,9 +173,9 @@ jobs:
           
           echo "正在克隆源码仓库..." &&
           SRC_REPO="${{ github.event.inputs.source_repo }}" &&
-          [ -n "$SRC_REPO" ] || SRC_REPO="cctv18" &&
+          [ -n "$SRC_REPO" ] || SRC_REPO="OnePlusOSS" &&
           SRC_BRANCH="${{ github.event.inputs.source_branch }}" &&
-          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12_6.1.141" &&
+          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_ace_5" &&
           # ⚠️ 不要用 archive/zip 下载：GitHub 的 zip 会把仓库里的 **symlink 解成普通文件**，
           #    而 OnePlusOSS 官方 sm8650 树里大量使用 symlink（kernel/oplus_cpu、
           #    drivers/soc/oplus/oplus_resctrl 等），zip 之后这些路径全变成内容为
@@ -278,7 +278,7 @@ jobs:
         id: ccacheconf
         run: |
           SRC_BRANCH="${{ github.event.inputs.source_branch }}"
-          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_oneplus12_6.1.141"
+          [ -n "$SRC_BRANCH" ] || SRC_BRANCH="oneplus/sm8650_b_16.0.0_ace_5"
           VER_TAG=$(grep -m1 SUBLEVEL kernel_workspace/common/Makefile | awk '{print $3}')
           echo "源码分支: $SRC_BRANCH -> 内核 6.1.$VER_TAG"
           echo "ksublevel=$VER_TAG" >> $GITHUB_OUTPUT
