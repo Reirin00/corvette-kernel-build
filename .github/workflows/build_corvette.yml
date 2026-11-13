@@ -1274,6 +1274,19 @@ jobs:
           sudo rm -rf /usr/local/lib/android &
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
+
+          # ===== [ace5] 补缺失的 locking_record_switch_in_cs =====
+          # ace_5 分支的 kernel/sched/core.c:6793 调用了这个函数，但定义没跟过来
+          # （厂商分支不完整，corvette 那棵树没有这个调用）。补一个空实现即可。
+          CORE=kernel_workspace/common/kernel/sched/core.c
+          if ! grep -q "^static inline void locking_record_switch_in_cs" "$CORE" 2>/dev/null; then
+            sed -i '\|^#include <linux/sched.h>|a static inline void locking_record_switch_in_cs(void *p) { (void)p; }' "$CORE" 2>/dev/null || \
+            sed -i '1i static inline void locking_record_switch_in_cs(void *p) { (void)p; }' "$CORE"
+            echo "[ace5] 已注入 locking_record_switch_in_cs stub"
+          else
+            echo "[ace5] stub 已存在"
+          fi
+
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld HOSTCFLAGS="-Wno-error -Wno-incompatible-pointer-types-discards-qualifiers" O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin Image ||
           { echo "!! 内核编译失败(make), 见上方日志"; exit 1; }
