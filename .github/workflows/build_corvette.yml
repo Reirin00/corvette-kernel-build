@@ -1279,14 +1279,18 @@ jobs:
           # ace_5 分支的 kernel/sched/core.c:6793 调用了这个函数，但定义没跟过来
           # （厂商分支不完整，corvette 那棵树没有这个调用）。补一个空实现即可。
           CORE=$(for c in kernel/sched/core.c common/kernel/sched/core.c kernel_workspace/common/kernel/sched/core.c; do [ -f "$c" ] && { echo "$c"; break; }; done)
-          [ -n "$CORE" ] || { echo "[ace5] 找不到 core.c，当前目录: $(pwd)"; ls -d kernel common 2>/dev/null; exit 1; }
-          if ! grep -q "^static inline void locking_record_switch_in_cs" "$CORE" 2>/dev/null; then
-            sed -i '\|^#include <linux/sched.h>|a static inline void locking_record_switch_in_cs(void *p) { (void)p; }' "$CORE" 2>/dev/null || \
-            sed -i '1i static inline void locking_record_switch_in_cs(void *p) { (void)p; }' "$CORE"
-            echo "[ace5] 已注入 locking_record_switch_in_cs stub"
+          [ -n "$CORE" ] || { echo "[ace5] 找不到 core.c，pwd=$(pwd)"; ls -d kernel common 2>/dev/null; exit 1; }
+          echo "[ace5] CORE=$CORE pwd=$(pwd)"
+          # ace_5 这棵树 __schedule() 里调用了 locking_record_switch_in_cs，
+          # 但函数定义没随分支提供（corvette 树无此调用）。直接注释掉该调用，
+          # 比注入 stub 更可靠（不依赖插入位置和 include 顺序）。
+          if grep -q "locking_record_switch_in_cs(prev)" "$CORE"; then
+            sed -i 's|^[[:space:]]*\(locking_record_switch_in_cs(prev);\)|[ace5-removed] \1 /* decl missing in ace_5 branch */|' "$CORE"
+            echo "[ace5] 已注释调用:"; grep -n "locking_record_switch_in_cs" "$CORE" | head -3
           else
-            echo "[ace5] stub 已存在"
+            echo "[ace5] 未找到该调用（可能已处理）"
           fi
+          test -z "$(grep -c 'locking_record_switch_in_cs(prev);' "$CORE" | grep -v '^0$')" || { echo "[ace5] 注释失败"; exit 1; }
 
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld HOSTCFLAGS="-Wno-error -Wno-incompatible-pointer-types-discards-qualifiers" O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin Image ||
