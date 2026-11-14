@@ -1290,7 +1290,9 @@ jobs:
           else
             echo "[ace5] 未找到该调用（可能已处理）"
           fi
-          test -z "$(grep -c 'locking_record_switch_in_cs(prev);' "$CORE" | grep -v '^0$')" || { echo "[ace5] 注释失败"; exit 1; }
+          # 校验：6793 行附近必须以 [ace5-removed] 开头，否则说明 sed 没生效
+          grep -q '^\[ace5-removed\] locking_record_switch_in_cs' "$CORE" || { echo "[ace5] 注释失败"; grep -n "locking_record_switch_in_cs" "$CORE" | head -3; exit 1; }
+          echo "[ace5] 校验通过"
 
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld HOSTCFLAGS="-Wno-error -Wno-incompatible-pointer-types-discards-qualifiers" O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KBUILD_BUILD_USER=Reirin KBUILD_BUILD_HOST=Reirin Image ||
