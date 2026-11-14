@@ -1278,7 +1278,8 @@ jobs:
           # ===== [ace5] 补缺失的 locking_record_switch_in_cs =====
           # ace_5 分支的 kernel/sched/core.c:6793 调用了这个函数，但定义没跟过来
           # （厂商分支不完整，corvette 那棵树没有这个调用）。补一个空实现即可。
-          CORE=$([ -f common/kernel/sched/core.c ] && echo common/kernel/sched/core.c || echo kernel_workspace/common/kernel/sched/core.c)
+          CORE=$(for c in kernel/sched/core.c common/kernel/sched/core.c kernel_workspace/common/kernel/sched/core.c; do [ -f "$c" ] && { echo "$c"; break; }; done)
+          [ -n "$CORE" ] || { echo "[ace5] 找不到 core.c，当前目录: $(pwd)"; ls -d kernel common 2>/dev/null; exit 1; }
           if ! grep -q "^static inline void locking_record_switch_in_cs" "$CORE" 2>/dev/null; then
             sed -i '\|^#include <linux/sched.h>|a static inline void locking_record_switch_in_cs(void *p) { (void)p; }' "$CORE" 2>/dev/null || \
             sed -i '1i static inline void locking_record_switch_in_cs(void *p) { (void)p; }' "$CORE"
